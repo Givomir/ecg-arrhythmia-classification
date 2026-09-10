@@ -1,0 +1,36 @@
+# Данни (не се качват - твърде големи, лицензирани)
+mit-bih*/
+*.dat
+*.hea
+*.atr
+guidelines/
+*.pdf
+
+# Обучени модели и индекси (генерират се локално)
+artifacts/
+artifacts_mlp/
+artifacts_cnn/
+rag_index/
+*.pkl
+*.keras
+*.npy
+
+# Генерирани изображения
+ecg_*.png
+*_classified.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+venv/
+env/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

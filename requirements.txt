@@ -1,0 +1,15 @@
+numpy<2
+wfdb
+scikit-learn
+imbalanced-learn
+matplotlib
+scipy
+fastapi
+uvicorn
+joblib
+requests
+tensorflow
+sentence-transformers
+pymupdf
+pypdf
+streamlit
