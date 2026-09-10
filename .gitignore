@@ -34,3 +34,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Но PNG-тата за GitHub Pages ги качваме
+!docs/img/*.png

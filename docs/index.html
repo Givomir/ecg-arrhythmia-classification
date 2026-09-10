@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECG Arrhythmia Classification — SoftUni ML Project</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#14181d;
+    --ink-soft:#41505c;
+    --paper:#fbfaf7;
+    --panel:#ffffff;
+    --line:#e0ddd4;
+    --trace:#c0392b;      /* ECG red */
+    --n:#2ca02c; --s:#e8a33d; --v:#c0392b;
+    --blue:#3b6ea5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;
+    line-height:1.6;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px}
+  h1,h2,h3{font-family:"Newsreader",Georgia,serif;font-weight:600;line-height:1.15;letter-spacing:-.01em}
+
+  /* ---- Hero with ECG trace ---- */
+  header{border-bottom:1px solid var(--line);background:var(--panel)}
+  .hero{padding:64px 0 40px;position:relative}
+  .trace-svg{width:100%;height:70px;display:block;margin-bottom:32px}
+  .trace-svg path{fill:none;stroke:var(--trace);stroke-width:2;
+    stroke-dasharray:1600;stroke-dashoffset:1600;animation:draw 3s ease-out forwards}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  @media (prefers-reduced-motion:reduce){.trace-svg path{animation:none;stroke-dashoffset:0}}
+  h1{font-size:clamp(2.1rem,5vw,3.4rem);max-width:16ch}
+  .lede{font-size:1.15rem;color:var(--ink-soft);max-width:64ch;margin-top:18px}
+  .meta{margin-top:24px;font-family:"IBM Plex Mono",monospace;font-size:.82rem;
+    color:var(--ink-soft);display:flex;gap:18px;flex-wrap:wrap}
+  .meta span{padding:4px 10px;border:1px solid var(--line);border-radius:3px;background:var(--paper)}
+
+  .disclaimer{background:#fdf3f2;border:1px solid #f0c9c4;border-radius:4px;
+    padding:12px 16px;margin-top:28px;font-size:.9rem;color:#8a2b20}
+
+  /* ---- Sections ---- */
+  section{padding:52px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:1.9rem;margin-bottom:8px}
+  .sub{color:var(--ink-soft);margin-bottom:28px;max-width:60ch}
+
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .feature{background:var(--panel);padding:22px 20px}
+  .feature h3{font-size:1.05rem;margin-bottom:6px}
+  .feature p{font-size:.92rem;color:var(--ink-soft)}
+
+  figure{margin:8px 0 4px}
+  figure img{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff}
+  figcaption{font-size:.85rem;color:var(--ink-soft);margin-top:10px;font-family:"IBM Plex Mono",monospace}
+
+  table{width:100%;border-collapse:collapse;margin:20px 0;font-size:.94rem}
+  th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--line)}
+  th{font-family:"IBM Plex Mono",monospace;font-size:.78rem;font-weight:500;
+    color:var(--ink-soft);text-transform:none}
+  td:not(:first-child),th:not(:first-child){text-align:center;font-variant-numeric:tabular-nums}
+  tbody tr:hover{background:#faf8f3}
+  .best{color:var(--v);font-weight:600}
+  .tag{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:baseline}
+
+  .prose p{margin-bottom:16px;max-width:68ch}
+  .prose strong{font-weight:600}
+  .pipeline{font-family:"IBM Plex Mono",monospace;font-size:.86rem;background:var(--panel);
+    border:1px solid var(--line);border-radius:6px;padding:20px;overflow-x:auto;color:var(--ink-soft);line-height:1.8}
+  .pipeline b{color:var(--ink)}
+
+  code{font-family:"IBM Plex Mono",monospace;font-size:.86em;background:#f0ede5;
+    padding:2px 6px;border-radius:3px}
+  pre{background:#14181d;color:#e8e6df;padding:18px 20px;border-radius:6px;overflow-x:auto;
+    font-family:"IBM Plex Mono",monospace;font-size:.85rem;line-height:1.7;margin:14px 0}
+  pre .c{color:#8a94a0}
+
+  a{color:var(--blue);text-decoration:none;border-bottom:1px solid transparent}
+  a:hover{border-bottom-color:var(--blue)}
+  .cta{display:inline-block;margin-top:8px;padding:11px 22px;background:var(--ink);color:#fff;
+    border-radius:5px;font-size:.95rem;border-bottom:none}
+  .cta:hover{background:#2b333c;border-bottom:none}
+
+  footer{padding:40px 0 60px;color:var(--ink-soft);font-size:.88rem}
+  :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <svg class="trace-svg" viewBox="0 0 1600 70" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0,35 L180,35 L200,33 L215,37 L235,35 L360,35 L378,10 L390,60 L402,20 L415,35 L540,35 L560,33 L575,37 L595,35 L720,35 L738,10 L750,60 L762,20 L775,35 L900,35 L920,33 L935,37 L955,35 L1080,35 L1098,10 L1110,60 L1122,20 L1135,35 L1260,35 L1280,33 L1295,37 L1315,35 L1440,35 L1458,10 L1470,60 L1482,20 L1495,35 L1600,35"/>
+    </svg>
+    <h1>Classifying heartbeats, then explaining the call</h1>
+    <p class="lede">A multi-class arrhythmia classifier on the MIT-BIH database — three
+    models compared head-to-head, an explainable visualizer, a REST API, and a
+    retrieval system that grounds recommendations in ACC/AHA cardiology guidelines
+    through a local LLM.</p>
+    <div class="meta">
+      <span>MIT-BIH Arrhythmia DB</span>
+      <span>Random Forest · MLP · 1D&nbsp;CNN</span>
+      <span>RAG + Llama&nbsp;3.2</span>
+      <span>SoftUni ML</span>
+    </div>
+    <div class="disclaimer"><strong>Educational prototype</strong> — not a medical
+    device. Does not replace clinical judgment. Not for real diagnosis or treatment.</div>
+  </div>
+</header>
+
+<main>
+
+<section>
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="sub">The full path from a raw ECG signal to a grounded, cited recommendation.</p>
+    <div class="features">
+      <div class="feature"><h3>Multi-class beats</h3><p>Five AAMI EC57 classes (N, S, V, F, Q) rather than a binary normal/abnormal split.</p></div>
+      <div class="feature"><h3>Patient-wise split</h3><p>Train and test are separated by record, so no patient's beats leak across the boundary.</p></div>
+      <div class="feature"><h3>Real features</h3><p>Beat morphology, RR intervals, rhythm-normalized RR, and P-wave features — 239 per beat.</p></div>
+      <div class="feature"><h3>Explainable</h3><p>Every beat is colored by class and the visualizer reports which feature groups drove the decision.</p></div>
+      <div class="feature"><h3>Served &amp; testable</h3><p>A FastAPI endpoint serves any of the three models; a client sends real beats to it.</p></div>
+      <div class="feature"><h3>Guideline-grounded</h3><p>Retrieval pulls relevant ACC/AHA passages; a local Llama drafts an educational note with citations.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The signal, read by the model</h2>
+    <p class="sub">Each detected beat is classified and marked. Abnormal beats are starred;
+    color encodes the predicted class.</p>
+    <figure>
+      <img src="img/ecg_demo.png" alt="ECG trace with beats colored and labeled by predicted class">
+      <figcaption>
+        <span class="tag" style="background:var(--n)"></span>Normal
+        <span class="tag" style="background:var(--s)"></span>Supraventricular
+        <span class="tag" style="background:var(--v)"></span>Ventricular
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Three models, one honest comparison</h2>
+    <p class="sub">All three trained on the same 239 features with a patient-wise split.
+    The interesting story is the hardest class, S.</p>
+
+    <figure>
+      <img src="img/recall_comparison.png" alt="Bar chart of per-class recall for Random Forest, MLP and CNN">
+      <figcaption>Per-class recall. MLP roughly doubles S recall over Random Forest.</figcaption>
+    </figure>
+
+    <table>
+      <thead>
+        <tr><th>Model</th><th>Accuracy</th><th>Macro F1</th><th>S recall</th><th>V recall</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Random Forest</td><td>0.90</td><td>0.42</td><td>0.13</td><td>0.87</td></tr>
+        <tr><td>MLP</td><td>0.89</td><td class="best">0.45</td><td class="best">0.32</td><td class="best">0.96</td></tr>
+        <tr><td>1D CNN</td><td>0.83</td><td>0.39</td><td>0.26</td><td>0.80</td></tr>
+      </tbody>
+    </table>
+
+    <div class="prose">
+      <p><strong>MLP is the best-balanced model.</strong> On identical features it reached
+      the highest macro F1 and doubled recall on the difficult supraventricular (S) class
+      versus Random Forest, while keeping strong N and V performance.</p>
+      <p><strong>The bottleneck is the data, not the models.</strong> S, F and Q have few
+      examples, and S beats look near-normal in morphology — so the limiting factor is class
+      imbalance and signal ambiguity rather than classifier choice. That is a realistic,
+      defensible conclusion rather than a chased accuracy number.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>From beats to a grounded recommendation</h2>
+    <p class="sub">The classifier's summary becomes a query into indexed guideline text;
+    a local model drafts the note strictly from the retrieved passages.</p>
+    <div class="pipeline">
+ECG record → <b>classifier</b> → beat-class summary<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+&nbsp;&nbsp;&nbsp;&nbsp;query built from the dominant abnormality<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+<b>vector search</b> over ACC/AHA guidelines → top passages<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+<b>Llama 3.2</b> (Ollama, local) → educational note with [Source N] citations
+    </div>
+    <div class="prose" style="margin-top:22px">
+      <p>The model is instructed to answer <strong>only</strong> from the supplied passages
+      and to cite them, so it grounds its note in the guidelines rather than inventing
+      recommendations. Two guidelines are indexed: ventricular arrhythmias (2017) and
+      atrial fibrillation (2023), matching the model's V and S classes.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Run it</h2>
+    <p class="sub">Data, trained models and guideline PDFs are generated or downloaded
+    locally — the repository ships only code.</p>
+    <pre><span class="c"># set up an isolated environment</span>
+conda create -n ecg python=3.11 -y
+conda activate ecg
+pip install -r requirements.txt
+
+<span class="c"># train, visualize, serve</span>
+python train_mlp.py --data_dir /path/to/mit-bih --out_dir artifacts_mlp
+python visualize_ecg.py --data_dir /path/to/mit-bih --record 208 --artifacts artifacts_mlp
+
+<span class="c"># full web app (needs Ollama running llama3.2)</span>
+streamlit run app_web.py</pre>
+    <a class="cta" href="https://github.com/Givomir/ecg-arrhythmia-classification" id="repo-link">View the source on GitHub →</a>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    Educational machine-learning project · MIT-BIH Arrhythmia Database ·
+    ACC/AHA clinical practice guidelines. Code provided as-is for learning purposes.
+    The database and guidelines are subject to their own licenses.
+  </div>
+</footer>
+
+</body>
+</html>
