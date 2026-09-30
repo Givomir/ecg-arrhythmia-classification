@@ -3,6 +3,7 @@ wfdb
 scikit-learn
 imbalanced-learn
 matplotlib
+plotly
 scipy
 fastapi
 uvicorn

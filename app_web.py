@@ -3,7 +3,7 @@ ECG Analyzer — Web Application
 ================================
 Combines the full system into one interactive app:
   * Record and model selection
-  * ECG plot with beats colored by class
+  * Interactive plot of the whole ECG (scroll bar), beats colored by class
   * Class distribution
   * RAG clinical recommendation (guidelines + Llama)
 
@@ -18,8 +18,7 @@ The data path is set in the sidebar.
 import os
 import numpy as np
 import streamlit as st
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+import plotly.graph_objects as go
 from collections import Counter
 
 # Reuse the existing logic
@@ -76,43 +75,81 @@ def analyze_record(data_dir, record, artifacts, lead=0):
     return signal, fs, kept, pred, model_type
 
 
-def plot_ecg(signal, fs, kept, pred, start_sec, seconds):
-    """Draw ECG with colored beats."""
-    s0 = int(start_sec * fs)
-    s1 = min(int((start_sec + seconds) * fs), len(signal))
-    t = np.arange(s0, s1) / fs
+def overview_envelope(signal, fs, bucket_sec=0.25):
+    """
+    Min/max envelope of the whole signal - a light trace (a few thousand
+    points instead of ~650k) drawn in the scroll bar under the plot.
+    """
+    b = max(1, int(bucket_sec * fs))
+    n = len(signal) // b * b
+    blocks = signal[:n].reshape(-1, b)
+    t = (np.arange(len(blocks)) * b + b / 2) / fs
+    # alternate min and max, so the line traces the envelope
+    return np.repeat(t, 2), np.column_stack([blocks.min(1), blocks.max(1)]).ravel()
 
-    fig, ax = plt.subplots(figsize=(14, 5))
-    ax.plot(t, signal[s0:s1], color='#333', linewidth=0.8, zorder=1)
 
-    shown = set()
-    for k, (r_peak, true) in enumerate(kept):
-        if not (s0 <= r_peak < s1):
+def plot_ecg(signal, fs, kept, pred, window_sec):
+    """
+    Interactive plot of the WHOLE record with a scroll bar (range slider).
+    The main view shows `window_sec` seconds; drag the window in the scroll
+    bar (or pan the plot) to move through the record, drag its edges to zoom.
+
+    Axes trick: the full-resolution ECG and the beat markers are WebGL traces
+    on y2 (fast, but not drawn in the range slider). The light overview
+    envelope is on the primary y axis, which is hidden far outside the main
+    view, so the envelope is visible only in the scroll bar.
+    """
+    t = np.arange(len(signal)) / fs
+    peaks = np.array([r for r, _ in kept])
+    true = np.array([c for _, c in kept])
+    pred = np.asarray(pred)
+
+    fig = go.Figure()
+    env_t, env_y = overview_envelope(signal, fs)
+    fig.add_trace(go.Scatter(x=env_t, y=env_y, mode='lines', yaxis='y',
+                             line=dict(color='#555', width=0.6),
+                             hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scattergl(x=t, y=signal, mode='lines', yaxis='y2',
+                               line=dict(color='#333', width=1),
+                               hoverinfo='skip', showlegend=False))
+
+    for cls, color in CLASS_COLORS.items():
+        m = pred == cls
+        if not m.any():
             continue
-        p = pred[k]
-        color = CLASS_COLORS.get(p, '#000')
-        tsec = r_peak / fs
-        ax.scatter([tsec], [signal[r_peak]], color=color, s=70, zorder=3,
-                   edgecolors='white', linewidths=0.7,
-                   label=f"{p} ({CLASS_NAMES.get(p)})" if p not in shown else None)
-        shown.add(p)
-        ax.annotate(p, (tsec, signal[r_peak]), textcoords="offset points",
-                    xytext=(0, 11), ha='center', fontsize=8, fontweight='bold',
-                    color=color)
-        if p != 'N':
-            ax.annotate('*', (tsec, signal[r_peak]), textcoords="offset points",
-                        xytext=(7, 3), ha='center', fontsize=14, color=color)
-        if p != true:
-            rect = Rectangle((tsec - 0.12, signal[r_peak] - 0.4), 0.24, 0.8,
-                             fill=False, edgecolor='red', linestyle='--',
-                             linewidth=1.1, zorder=2)
-            ax.add_patch(rect)
+        label = cls + ('*' if cls != 'N' else '')   # * = abnormality
+        fig.add_trace(go.Scattergl(
+            x=peaks[m] / fs, y=signal[peaks[m]], mode='markers+text', yaxis='y2',
+            text=[label] * int(m.sum()), textposition='top center',
+            textfont=dict(color=color, size=11),
+            marker=dict(color=color, size=9, line=dict(color='white', width=1)),
+            name=f"{cls} ({CLASS_NAMES.get(cls)})", customdata=true[m],
+            hovertemplate=(f"%{{x:.2f}} s<br>predicted: {cls}"
+                           "<br>annotated: %{customdata}<extra></extra>")))
 
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Amplitude (mV)')
-    ax.legend(loc='upper right', fontsize=8)
-    ax.grid(alpha=0.2)
-    plt.tight_layout()
+    wrong = pred != true
+    if wrong.any():
+        fig.add_trace(go.Scattergl(
+            x=peaks[wrong] / fs, y=signal[peaks[wrong]], mode='markers', yaxis='y2',
+            marker=dict(symbol='square-open', size=22, color='red', line=dict(width=1.5)),
+            name='Differs from annotation', hoverinfo='skip'))
+
+    lo, hi = np.percentile(signal, [0.05, 99.95])
+    pad = 0.1 * (hi - lo)
+    fig.update_layout(
+        height=480, margin=dict(l=60, r=20, t=40, b=20),
+        dragmode='pan', hovermode='closest',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        xaxis=dict(title='Time (seconds)', range=[0, min(window_sec, t[-1])],
+                   rangeslider=dict(visible=True, thickness=0.14,
+                                    range=[0, t[-1]], autorange=False,
+                                    yaxis=dict(rangemode='auto'))),
+        # primary y: only carries the overview envelope -> far outside the view
+        yaxis=dict(range=[1e6, 1e6 + 1], visible=False, fixedrange=True),
+        yaxis2=dict(title='Amplitude (mV)', overlaying='y', side='left',
+                    range=[lo - pad, hi + 2 * pad], fixedrange=True,
+                    zeroline=False),
+    )
     return fig
 
 
@@ -138,8 +175,9 @@ with st.sidebar:
                                  "artifacts_mlp": "MLP",
                                  "artifacts_cnn": "CNN"}.get(x, x))
     st.divider()
-    start_sec = st.slider("Start (second)", 0, 1800, 0, step=5)
-    seconds = st.slider("Duration (sec)", 5, 30, 10)
+    window_sec = st.slider("Visible window (sec)", 5, 60, 10,
+                           help="Initial width of the view; drag the edges of "
+                                "the scroll bar window to zoom in or out.")
 
 # --- Main view ---
 if st.button("Analyze record", type="primary"):
@@ -151,22 +189,33 @@ if st.button("Analyze record", type="primary"):
                 data_dir, record, artifacts)
         st.session_state['analysis'] = (record, artifacts, kept, pred, model_type,
                                         len(signal), fs)
+        st.session_state['view'] = (data_dir, record, artifacts)
 
-        # Plot
-        st.subheader(f"ECG record {record} ({model_type})")
-        fig = plot_ecg(signal, fs, kept, pred, start_sec, seconds)
-        st.pyplot(fig)
-        st.caption("Color = predicted class | * = abnormality | "
-                   "red dashed = differs from annotation")
+# The results stay visible across reruns (e.g. while generating the RAG
+# recommendation); analyze_record is cached, so this is cheap
+if 'view' in st.session_state:
+    v_dir, v_record, v_artifacts = st.session_state['view']
+    signal, fs, kept, pred, model_type = analyze_record(v_dir, v_record, v_artifacts)
 
-        # Distribution
-        counts = Counter(pred)
-        total = len(pred)
-        st.subheader("Beat distribution")
-        cols = st.columns(len(counts))
-        for col, (cls, cnt) in zip(cols, counts.most_common()):
-            col.metric(f"{cls} — {CLASS_NAMES.get(cls)}",
-                       f"{cnt}", f"{100*cnt/total:.1f}%")
+    # Plot
+    st.subheader(f"ECG record {v_record} ({model_type}, "
+                 f"{len(signal) / fs / 60:.1f} min)")
+    fig = plot_ecg(signal, fs, kept, pred, window_sec)
+    st.plotly_chart(fig, use_container_width=True,
+                    config={'scrollZoom': False, 'displaylogo': False})
+    st.caption("Scroll bar: drag the window to move through the whole record, "
+               "drag its edges to zoom | Color = predicted class | "
+               "* = abnormality | red square = differs from annotation | "
+               "hover a beat for details")
+
+    # Distribution
+    counts = Counter(pred)
+    total = len(pred)
+    st.subheader("Beat distribution")
+    cols = st.columns(len(counts))
+    for col, (cls, cnt) in zip(cols, counts.most_common()):
+        col.metric(f"{cls} — {CLASS_NAMES.get(cls)}",
+                   f"{cnt}", f"{100*cnt/total:.1f}%")
 
 # --- RAG recommendation ---
 if 'analysis' in st.session_state:
