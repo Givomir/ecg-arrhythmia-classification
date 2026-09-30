@@ -105,7 +105,7 @@
     through a local LLM.</p>
     <div class="meta">
       <span>MIT-BIH Arrhythmia DB</span>
-      <span>Random Forest · MLP · 1D&nbsp;CNN</span>
+      <span>Cascade RF · Random Forest · MLP · 1D&nbsp;CNN</span>
       <span>RAG + Llama&nbsp;3.2</span>
       <span>SoftUni ML</span>
     </div>
@@ -122,7 +122,7 @@
     <p class="sub">The full path from a raw ECG signal to a grounded, cited recommendation.</p>
     <div class="features">
       <div class="feature"><h3>Multi-class beats</h3><p>Five AAMI EC57 classes (N, S, V, F, Q) rather than a binary normal/abnormal split.</p></div>
-      <div class="feature"><h3>Patient-wise split</h3><p>Train and test are separated by record, so no patient's beats leak across the boundary.</p></div>
+      <div class="feature"><h3>Inter-patient split</h3><p>The standard DS1/DS2 split (de Chazal, 2004): no patient's beats leak across the boundary, and results are comparable with the literature.</p></div>
       <div class="feature"><h3>Real features</h3><p>Beat morphology, RR intervals, rhythm-normalized RR, and P-wave features — 239 per beat.</p></div>
       <div class="feature"><h3>Explainable</h3><p>Every beat is colored by class and the visualizer reports which feature groups drove the decision.</p></div>
       <div class="feature"><h3>Served &amp; testable</h3><p>A FastAPI endpoint serves any of the three models; a client sends real beats to it.</p></div>
@@ -150,29 +150,34 @@
 <section>
   <div class="wrap">
     <h2>Three models, one honest comparison</h2>
-    <p class="sub">All three trained on the same 239 features with a patient-wise split.
+    <p class="sub">All three trained on the same 239 features on DS1 and tested on 22 unseen DS2 patients.
     The interesting story is the hardest class, S.</p>
 
     <figure>
       <img src="img/recall_comparison.png" alt="Bar chart of per-class recall for Random Forest, MLP and CNN">
-      <figcaption>Per-class recall. MLP roughly doubles S recall over Random Forest.</figcaption>
+      <figcaption>Per-class recall on DS2. CNN finds the most S beats; Random Forest leads on N and V.</figcaption>
     </figure>
 
     <table>
       <thead>
-        <tr><th>Model</th><th>Accuracy</th><th>Macro F1</th><th>S recall</th><th>V recall</th></tr>
+        <tr><th>Model</th><th>Accuracy</th><th>Macro F1</th><th>S recall</th><th>V recall</th><th>RAG routing</th></tr>
       </thead>
       <tbody>
-        <tr><td>Random Forest</td><td>0.90</td><td>0.42</td><td>0.13</td><td>0.87</td></tr>
-        <tr><td>MLP</td><td>0.89</td><td class="best">0.45</td><td class="best">0.32</td><td class="best">0.96</td></tr>
-        <tr><td>1D CNN</td><td>0.83</td><td>0.39</td><td>0.26</td><td>0.80</td></tr>
+        <tr><td><strong>Cascade RF (default)</strong></td><td>0.92</td><td class="best">0.44</td><td>0.25</td><td class="best">0.96</td><td class="best">15/15</td></tr>
+        <tr><td>Random Forest</td><td class="best">0.93</td><td>0.41</td><td>0.12</td><td>0.95</td><td>14/15</td></tr>
+        <tr><td>MLP</td><td>0.79</td><td>0.37</td><td>0.30</td><td>0.88</td><td>12/15</td></tr>
+        <tr><td>1D CNN</td><td>0.84</td><td>0.39</td><td class="best">0.40</td><td>0.77</td><td>13/15</td></tr>
       </tbody>
     </table>
 
     <div class="prose">
-      <p><strong>MLP is the best-balanced model.</strong> On identical features it reached
-      the highest macro F1 and doubled recall on the difficult supraventricular (S) class
-      versus Random Forest, while keeping strong N and V performance.</p>
+      <p><strong>The Cascade RF is the default model.</strong> It adds a dedicated S-vs-N
+      stage with rhythm-irregularity features to the Random Forest. It doubles S recall at
+      higher S precision, has the best macro F1 and V recall, and routes all 15 real DS2
+      records to the guideline that the cardiologist annotations point to. An ablation study
+      chose it; the README explains the tests and the choice. Its trade-off is more false
+      F alarms on normal beats. CNN catches the most supraventricular (S) beats, but at the
+      cost of many false alarms on normal beats.</p>
       <p><strong>The bottleneck is the data, not the models.</strong> S, F and Q have few
       examples, and S beats look near-normal in morphology — so the limiting factor is class
       imbalance and signal ambiguity rather than classifier choice. That is a realistic,

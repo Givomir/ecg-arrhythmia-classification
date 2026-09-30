@@ -1,22 +1,25 @@
 """
-MLP (невронна мрежа) за ЕКГ класификация
+MLP (neural network) for ECG classification
 ==========================================
-Ползва СЪЩИТЕ 239 признака като Random Forest pipeline-а -> чисто сравнение.
-Разликата спрямо train_arrhythmia.py:
-  * Класификатор: MLPClassifier (многослоен перцептрон) вместо Random Forest
-  * Балансиране: претеглена загуба (sample_weight) вместо SMOTE - при
-    невронни мрежи това обикновено дава по-добър recall за редките класове
-    без да "залива" модела със синтетични примери.
+Uses the SAME 239 features as the Random Forest pipeline -> a clean comparison.
+Differences from train_arrhythmia.py:
+  * Classifier: MLPClassifier (multi-layer perceptron) instead of Random Forest
+  * Balancing: oversampling by repeating real examples instead of SMOTE
+  * Early stopping by macro F1 on SEPARATE validation records (patients).
+    sklearn's built-in early_stopping takes its validation set from the already
+    oversampled data -> copies of the same beats end up in both train
+    and validation, and stopping becomes meaningless. So we train manually
+    epoch by epoch with partial_fit and keep the best epoch.
 
-Изисква вече обновените train_arrhythmia.py и utility.py (239 признака).
-Импортира логиката за извличане директно от train_arrhythmia, за да няма
-дублиране и разминаване.
+Split: DS1 (without VAL_RECORDS) -> train, VAL_RECORDS -> validation,
+DS2 -> test (see train_arrhythmia.get_split).
 
-Изпълнение:
-    python train_mlp.py --data_dir /път/до/mit-bih --out_dir artifacts_mlp
+Usage:
+    python train_mlp.py --data_dir /path/to/mit-bih --out_dir artifacts_mlp
 """
 
 import os
+import copy
 import argparse
 import numpy as np
 import joblib
@@ -24,11 +27,11 @@ from collections import Counter
 
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
-# Преизползваме готовата логика за извличане на признаци и AAMI групите,
-# за да е ГАРАНТИРАНО същото като при Random Forest.
-from train_arrhythmia import process_records, AAMI_GROUPS
+# Reuse the existing feature extraction and split logic,
+# so that it is GUARANTEED to be the same as for Random Forest.
+from train_arrhythmia import load_split
 
 
 def main():
@@ -36,94 +39,84 @@ def main():
     ap.add_argument('--data_dir', required=True)
     ap.add_argument('--out_dir', default='artifacts_mlp')
     ap.add_argument('--lead', type=int, default=0)
+    ap.add_argument('--epochs', type=int, default=60)
+    ap.add_argument('--patience', type=int, default=8)
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    record_numbers = ['100','101','103','105','106','108','109','111','112','113',
-                      '114','115','116','117','118','119','121','122','123','124',
-                      '200','201','202','203','205','207','208','209','210','212',
-                      '213','214','215','219','220','221','222','223','228','230',
-                      '231','232','233','234']
-    record_numbers = [r for r in record_numbers
-                      if os.path.exists(os.path.join(args.data_dir, r + '.dat'))]
-    if not record_numbers:
-        raise FileNotFoundError(f"Няма намерени записи в {args.data_dir}")
+    X_train, y_train, X_val, y_val, X_test, y_test = load_split(
+        args.data_dir, args.lead, with_val=True)
 
-    n_train = int(0.8 * len(record_numbers))
-    train_records = record_numbers[:n_train]
-    test_records = record_numbers[n_train:]
-    print(f"Записи за трениране: {len(train_records)} | за тест: {len(test_records)}")
-
-    print("Извличане на характеристики (train)...")
-    X_train, y_train = process_records(train_records, args.data_dir, args.lead)
-    print("Извличане на характеристики (test)...")
-    X_test, y_test = process_records(test_records, args.data_dir, args.lead)
-    print(f"X_train: {X_train.shape} | X_test: {X_test.shape}")
-    print("Разпределение (train):", Counter(y_train))
-    print("Разпределение (test): ", Counter(y_test))
-
-    # -- Кодиране на етикетите --
+    # -- Label encoding --
     le = LabelEncoder()
-    y_train_enc = le.fit_transform(y_train)
+    le.fit(np.concatenate([y_train, y_val, y_test]))
+    y_train_enc = le.transform(y_train)
+    y_val_enc = le.transform(y_val)
     y_test_enc = le.transform(y_test)
-    print("Класове:", list(le.classes_))
+    classes = np.arange(len(le.classes_))
+    print("Classes:", list(le.classes_))
 
-    # -- Скалиране (задължително за невронни мрежи!) --
+    # -- Scaling (mandatory for neural networks!) - fit on train only --
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
+    X_val_s = scaler.transform(X_val)
     X_test_s = scaler.transform(X_test)
 
-    # -- Балансиране без SMOTE --
-    # Вместо синтетични данни, oversample-ваме реалните примери на редките
-    # класове чрез повтаряне (виж _balanced_indices). При невронни мрежи това
-    # обикновено дава по-добър recall за S/F/Q без изкуствени артефакти.
-
-    # -- MLP архитектура --
-    # Два скрити слоя (128, 64). early_stopping спира, когато валидацията
-    # спре да се подобрява -> предпазва от преобучение.
+    # -- MLP architecture --
+    # Two hidden layers (128, 64). No built-in early_stopping (see above).
     clf = MLPClassifier(
         hidden_layer_sizes=(128, 64),
         activation='relu',
         solver='adam',
-        alpha=1e-4,                 # L2 регуляризация
+        alpha=1e-4,                 # L2 regularization
         batch_size=256,
         learning_rate_init=1e-3,
-        max_iter=100,
-        early_stopping=True,
-        validation_fraction=0.1,
-        n_iter_no_change=10,
         random_state=42,
-        verbose=True,
     )
 
-    print("Трениране на MLP...")
-    # Балансиране чрез повтаряне на редките класове по индекси
-    # (ръчен oversampling - без синтетични данни като SMOTE).
-    idx = _balanced_indices(y_train_enc, random_state=42)
-    clf.fit(X_train_s[idx], y_train_enc[idx])
+    # -- Epoch-by-epoch training with early stopping on validation macro F1 --
+    # Every epoch: a fresh balanced oversample of train (repeating real
+    # examples, no synthetic data like SMOTE). Validation is NOT touched.
+    print("Training MLP...")
+    best_f1, best_epoch, best_model, bad = -1.0, 0, None, 0
+    for epoch in range(1, args.epochs + 1):
+        idx = _balanced_indices(y_train_enc, random_state=epoch)
+        clf.partial_fit(X_train_s[idx], y_train_enc[idx], classes=classes)
+        val_f1 = f1_score(y_val_enc, clf.predict(X_val_s), labels=classes,
+                          average='macro', zero_division=0)
+        print(f"  epoch {epoch:3d} | loss {clf.loss_:.4f} | val macro F1 {val_f1:.4f}")
+        if val_f1 > best_f1:
+            best_f1, best_epoch, best_model, bad = val_f1, epoch, copy.deepcopy(clf), 0
+        else:
+            bad += 1
+            if bad >= args.patience:
+                print(f"  Early stopping: {args.patience} epochs without improvement")
+                break
+    clf = best_model
+    print(f"Best epoch: {best_epoch} (val macro F1 = {best_f1:.4f})")
 
-    # -- Оценка --
+    # -- Evaluation on DS2 --
     y_pred = clf.predict(X_test_s)
     print("\n===== Classification Report (MLP) =====")
-    print(classification_report(y_test_enc, y_pred,
+    print(classification_report(y_test_enc, y_pred, labels=classes,
                                 target_names=le.classes_, zero_division=0))
     print("===== Confusion Matrix =====")
-    print("Редове=истина, колони=предсказано; ред/колона =", list(le.classes_))
-    print(confusion_matrix(y_test_enc, y_pred))
+    print("Rows=true, columns=predicted; row/column order =", list(le.classes_))
+    print(confusion_matrix(y_test_enc, y_pred, labels=classes))
 
-    # -- Запазване --
+    # -- Saving --
     joblib.dump(clf, os.path.join(args.out_dir, 'model.pkl'))
     joblib.dump(scaler, os.path.join(args.out_dir, 'scaler.pkl'))
     joblib.dump(le, os.path.join(args.out_dir, 'label_encoder.pkl'))
-    print(f"\nЗапазени: model.pkl, scaler.pkl, label_encoder.pkl в {args.out_dir}/")
+    print(f"\nSaved: model.pkl, scaler.pkl, label_encoder.pkl in {args.out_dir}/")
 
 
 def _balanced_indices(y, random_state=42):
     """
-    Връща индекси, при които всеки клас е oversample-нат до размера
-    на най-големия клас (чрез повтаряне на реални примери, не синтетични).
-    По-леко от SMOTE и добре работи с невронни мрежи.
+    Returns indices in which every class is oversampled to the size
+    of the largest class (by repeating real examples, not synthetic ones).
+    Lighter than SMOTE and works well with neural networks.
     """
     rng = np.random.default_rng(random_state)
     counts = Counter(y)
@@ -131,7 +124,7 @@ def _balanced_indices(y, random_state=42):
     all_idx = []
     for cls in counts:
         cls_idx = np.where(y == cls)[0]
-        # повтаряме с връщане до max_n
+        # sample with replacement up to max_n
         chosen = rng.choice(cls_idx, size=max_n, replace=True)
         all_idx.append(chosen)
     out = np.concatenate(all_idx)

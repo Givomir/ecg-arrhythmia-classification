@@ -23,14 +23,14 @@ from matplotlib.patches import Rectangle
 from collections import Counter
 
 # Reuse the existing logic
-from train_arrhythmia import AAMI_GROUPS, extract_beat_features
+from train_arrhythmia import load_beats
+from utility import record_features, uses_rhythm_features
+from rag_recommend import CLASS_NAMES_EN, find_dominant, summarize_counts
 
 CLASS_COLORS = {'N': '#2ca02c', 'S': '#ff7f0e', 'V': '#d62728',
                 'F': '#9467bd', 'Q': '#7f7f7f'}
 CLASS_NAMES = {'N': 'Normal', 'S': 'Supraventricular', 'V': 'Ventricular',
                'F': 'Fusion', 'Q': 'Unknown'}
-CLASS_NAMES_EN = {'N': 'normal', 'S': 'supraventricular ectopic',
-                  'V': 'ventricular ectopic', 'F': 'fusion', 'Q': 'unknown/paced'}
 
 st.set_page_config(page_title="ECG Analyzer", layout="wide")
 
@@ -57,31 +57,12 @@ def load_model(artifacts):
 @st.cache_data
 def analyze_record(data_dir, record, artifacts, lead=0):
     """Classify all beats. Returns signal, beats, predictions."""
-    import wfdb
-    rec_path = os.path.join(data_dir, record)
-    rec = wfdb.rdrecord(rec_path)
-    ann = wfdb.rdann(rec_path, 'atr')
-    signal = rec.p_signal[:, lead]
-    fs = rec.fs
-
-    beats = [(s, sym) for s, sym in zip(ann.sample, ann.symbol)
-             if sym in AAMI_GROUPS]
-    peaks = [b[0] for b in beats]
-    rr_all = [(peaks[k] - peaks[k - 1]) / fs for k in range(1, len(peaks))]
-
-    X, kept = [], []
-    for i, (r_peak, sym) in enumerate(beats):
-        prev_r = beats[i - 1][0] if i > 0 else None
-        next_r = beats[i + 1][0] if i < len(beats) - 1 else None
-        lo = max(0, i - 10)
-        window_rr = rr_all[lo:i] if i > 0 else []
-        lmr = float(np.mean(window_rr)) if window_rr else None
-        feats = extract_beat_features(signal, r_peak, prev_r, next_r, fs,
-                                      local_mean_rr=lmr)
-        if feats is not None:
-            X.append(feats)
-            kept.append((r_peak, AAMI_GROUPS[sym]))
-    X = np.array(X)
+    signals, fs, beats = load_beats(os.path.join(data_dir, record))
+    signal = signals[:, lead]
+    X, kept_idx = record_features(signal, [b[0] for b in beats], fs,
+                                  rhythm=uses_rhythm_features(artifacts))
+    X = np.nan_to_num(X)
+    kept = [beats[i] for i in kept_idx]   # (r_peak, true AAMI class)
 
     model_type, model, scaler, le, nc = load_model(artifacts)
     Xs = scaler.transform(X)
@@ -150,10 +131,11 @@ with st.sidebar:
         value=r"C:\stasi\SoftUni_Machine_learning\mit-bih-arrhythmia-database-1.0.0\mit-bih-arrhythmia-database-1.0.0")
     record = st.text_input("Record number", value="200")
     artifacts = st.selectbox("Model",
-                             ["artifacts_mlp", "artifacts", "artifacts_cnn"],
+                             ["artifacts_cascade", "artifacts", "artifacts_mlp", "artifacts_cnn"],
                              format_func=lambda x: {
-                                 "artifacts_mlp": "MLP (recommended)",
+                                 "artifacts_cascade": "Cascade RF (recommended)",
                                  "artifacts": "Random Forest",
+                                 "artifacts_mlp": "MLP",
                                  "artifacts_cnn": "CNN"}.get(x, x))
     st.divider()
     start_sec = st.slider("Start (second)", 0, 1800, 0, step=5)
@@ -198,24 +180,17 @@ if 'analysis' in st.session_state:
     if st.button("Generate recommendation"):
         record, artifacts, kept, pred, model_type, _, fs = st.session_state['analysis']
         counts = Counter(pred)
-        total = len(pred)
 
-        # Summary
-        lines = [f"ECG record {record}: {total} beats analyzed, {fs} Hz."]
-        for cls, cnt in counts.most_common():
-            lines.append(f"  - {CLASS_NAMES_EN.get(cls, cls)} ({cls}): "
-                        f"{cnt} beats ({100*cnt/total:.1f}%)")
-        summary = "\n".join(lines)
-
-        abnormal = {c: n for c, n in counts.items() if c != 'N'}
-        dominant = max(abnormal, key=abnormal.get) if abnormal else None
+        # Same logic as rag_recommend.py (dominant-class threshold, targeted
+        # query), so the app matches what evaluate_rag.py measures
+        summary = summarize_counts(record, counts, fs)
+        dominant = find_dominant(counts)
         dominant_name = CLASS_NAMES_EN.get(dominant) if dominant else None
 
         try:
-            from rag_recommend import retrieve, build_prompt, ask_ollama
-            query = (f"management and evaluation of {dominant_name} arrhythmia "
-                     f"clinical recommendations") if dominant else \
-                    "normal sinus rhythm evaluation"
+            from rag_recommend import (retrieve, build_prompt, ask_ollama,
+                                       build_query_for_class)
+            query = build_query_for_class(dominant)
 
             with st.spinner("Searching guidelines..."):
                 passages = retrieve(query, 'rag_index', top_k=4)

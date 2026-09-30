@@ -1,16 +1,17 @@
 """
-Тестов клиент за ЕКГ API-то.
-Взима реален удар от избран запис, извлича същите 239 признака като при
-трениране, и го праща на живия FastAPI сървър.
+Test client for the ECG API.
+Takes a real beat from a chosen record, extracts the same features as in
+training (239, or 247 for a model trained with rhythm features - the server's
+/health tells which), and sends it to the running FastAPI server.
 
-Използване (сървърът трябва да работи в друг терминал):
+Usage (the server must be running in another terminal):
     python test_api.py --data_dir "C:\\...\\mit-bih..." --record 200 --beat 10
 
-Аргументи:
-    --data_dir  папка с MIT-BIH записите (.dat/.hea/.atr)
-    --record    номер на записа (по подразбиране 200)
-    --beat      кой пореден удар да се тества (по подразбиране 10)
-    --url       адрес на сървъра (по подразбиране http://127.0.0.1:8000)
+Arguments:
+    --data_dir  folder with the MIT-BIH records (.dat/.hea/.atr)
+    --record    record number (default 200)
+    --beat      which beat (by index) to test (default 10)
+    --url       server address (default http://127.0.0.1:8000)
 """
 import os
 import argparse
@@ -18,7 +19,7 @@ import numpy as np
 import wfdb
 import requests
 
-from utility import extract_beat_features_raw
+from utility import record_features, N_MORPH, N_CONTEXT
 from train_arrhythmia import AAMI_GROUPS
 
 
@@ -37,49 +38,44 @@ def main():
     signal = record.p_signal[:, args.lead]
     fs = record.fs
 
-    # Само истински удари с валиден AAMI клас (както при трениране)
+    # Only real beats with a valid AAMI class (as in training)
     beats = [(s, sym) for s, sym in zip(annotation.sample, annotation.symbol)
              if sym in AAMI_GROUPS]
 
     i = args.beat
     if i < 1 or i >= len(beats) - 1:
-        raise SystemExit(f"Изберете --beat между 1 и {len(beats) - 2}")
+        raise SystemExit(f"Choose --beat between 1 and {len(beats) - 2}")
 
-    r_peak = beats[i][0]
     true_symbol = beats[i][1]
     true_class = AAMI_GROUPS[true_symbol]
 
-    # Локална средна на RR (както при трениране)
-    peaks = [b[0] for b in beats]
-    rr_all = [(peaks[k] - peaks[k - 1]) / fs for k in range(1, len(peaks))]
-    lo = max(0, i - 10)
-    window_rr = rr_all[lo:i]
-    local_mean_rr = float(np.mean(window_rr)) if window_rr else None
+    # The rhythm features need the preceding beats, so the features are
+    # extracted for the whole record (as in training) and the beat is picked
+    n_expected = requests.get(f"{args.url}/health", timeout=30).json()['n_features']
+    X, kept = record_features(signal, [b[0] for b in beats], fs,
+                              rhythm=n_expected > N_MORPH + N_CONTEXT)
+    if i not in kept:
+        raise SystemExit("The beat is too close to the end of the record, choose another --beat")
+    feats = np.nan_to_num(X[kept.index(i)])
 
-    feats = extract_beat_features_raw(
-        signal, r_peak, beats[i - 1][0], beats[i + 1][0], fs,
-        local_mean_rr=local_mean_rr)
-    if feats is None:
-        raise SystemExit("Ударът е твърде близо до края на записа, изберете друг --beat")
-
-    print(f"Запис {args.record}, удар #{i}")
-    print(f"Истински символ: '{true_symbol}' -> AAMI клас: {true_class}")
-    print(f"Дължина на вектора: {len(feats)} признака")
-    print(f"Изпращам към {args.url}/predict ...\n")
+    print(f"Record {args.record}, beat #{i}")
+    print(f"True symbol: '{true_symbol}' -> AAMI class: {true_class}")
+    print(f"Vector length: {len(feats)} features")
+    print(f"Sending to {args.url}/predict ...\n")
 
     resp = requests.post(f"{args.url}/predict",
                          json={"features": feats.tolist()}, timeout=30)
     resp.raise_for_status()
     result = resp.json()
 
-    print("Отговор от сървъра:")
-    print(f"  Модел:      {result.get('model_type')}")
-    print(f"  Предсказан: {result.get('prediction')}  ({result.get('diagnosis')})")
-    print(f"  Истински:   {true_class}")
-    match = "верно" if result.get('prediction') == true_class else "грешно"
-    print(f"  Резултат:   {match}")
+    print("Server response:")
+    print(f"  Model:      {result.get('model_type')}")
+    print(f"  Predicted:  {result.get('prediction')}  ({result.get('diagnosis')})")
+    print(f"  True:       {true_class}")
+    match = "correct" if result.get('prediction') == true_class else "wrong"
+    print(f"  Result:     {match}")
     if result.get('probabilities'):
-        print("  Вероятности:")
+        print("  Probabilities:")
         for cls, p in sorted(result['probabilities'].items(),
                              key=lambda kv: -kv[1]):
             print(f"      {cls}: {p:.3f}")

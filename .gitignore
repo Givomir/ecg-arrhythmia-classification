@@ -1,4 +1,4 @@
-# Данни (не се качват - твърде големи, лицензирани)
+# Data (not committed - too large, licensed)
 mit-bih*/
 *.dat
 *.hea
@@ -6,16 +6,22 @@ mit-bih*/
 guidelines/
 *.pdf
 
-# Обучени модели и индекси (генерират се локално)
+# Trained models and indexes (generated locally)
 artifacts/
 artifacts_mlp/
 artifacts_cnn/
+artifacts_cascade/
+*_old_split/
 rag_index/
 *.pkl
 *.keras
 *.npy
+*.npz
 
-# Генерирани изображения
+# RAG evaluation results (generated locally)
+rag_eval_results.json
+
+# Generated images
 ecg_*.png
 *_classified.png
 
@@ -35,5 +41,7 @@ env/
 .DS_Store
 Thumbs.db
 
-# Но PNG-тата за GitHub Pages ги качваме
+# But the PNGs for GitHub Pages are committed
 !docs/img/*.png
+# Ablation study: raw per-run results and feature cache (the .md tables are committed)
+ablation_results/*.json

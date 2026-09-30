@@ -1,0 +1,122 @@
+{
+  "_comment": "Gold set for the RAG evaluation. class_expectations describes, for every dominant class, which guideline must be the source, which clinical terms must be present in the retrieved passages, and which terms must NOT appear in the answer unless they are in the passages (forbidden_terms - regex, match from the start of a word, case-insensitive). synthetic_cases test the dominant-class logic (incl. the threshold) with concrete beat counts. record_cases run the WHOLE pipeline on real DS2 records (unseen in training); the expected class there is computed from the physician annotations (.atr), not written by hand.",
+  "_verification_status": "SELF-VERIFIED against the guideline text; requires clinician review before publication",
+  "class_expectations": {
+    "V": {
+      "expected_source": "ventricular",
+      "expected_terms": ["premature ventricular", "ventricular arrhythmia", "sudden cardiac death", "ICD", "structural heart"],
+      "forbidden_terms": ["anticoagul", "CHA2DS2", "warfarin", "left atrial appendage"]
+    },
+    "S": {
+      "expected_source": "atrial",
+      "expected_terms": ["atrial fibrillation", "anticoagul", "stroke", "rate control", "rhythm control"],
+      "forbidden_terms": ["implantable cardioverter", "ICD", "sudden cardiac death", "ventricular tachycardia ablation"]
+    },
+    "F": {
+      "expected_source": "ventricular",
+      "expected_terms": ["ventricular arrhythmia", "structural heart", "monitoring"],
+      "forbidden_terms": ["anticoagul", "CHA2DS2"]
+    },
+    "Q": {
+      "expected_source": "either",
+      "expected_terms": ["monitoring", "evaluation"],
+      "forbidden_terms": ["urgent", "emergen"]
+    },
+    "none": {
+      "expected_source": "either",
+      "expected_terms": ["monitoring", "evaluation"],
+      "forbidden_terms": ["urgent", "emergen", "implantable cardioverter", "catheter ablation", "anticoagul"]
+    }
+  },
+  "synthetic_cases": [
+    {
+      "id": "syn_01_frequent_pvc",
+      "beat_counts": {"N": 1900, "V": 640},
+      "expected_dominant": "V",
+      "relevance_notes": "Frequent PVCs (~25%) warrant evaluation for underlying structural heart disease."
+    },
+    {
+      "id": "syn_02_ventricular_with_fusion",
+      "beat_counts": {"N": 1000, "V": 450, "F": 120},
+      "expected_dominant": "V",
+      "relevance_notes": "High ventricular burden - guideline discusses ICD for SCD prevention in appropriate patients."
+    },
+    {
+      "id": "syn_03_supraventricular",
+      "beat_counts": {"N": 1400, "S": 560},
+      "expected_dominant": "S",
+      "relevance_notes": "Frequent supraventricular ectopy can relate to AF risk; stroke prophylaxis considerations."
+    },
+    {
+      "id": "syn_04_af_pattern",
+      "beat_counts": {"N": 1200, "S": 800},
+      "expected_dominant": "S",
+      "relevance_notes": "Pattern suggestive of AF; rate/rhythm control and anticoagulation."
+    },
+    {
+      "id": "syn_05_normal_rare_ectopy",
+      "beat_counts": {"N": 2480, "V": 12, "S": 8},
+      "expected_dominant": null,
+      "relevance_notes": "Predominantly normal (<1% ectopy) - should NOT over-recommend intervention."
+    },
+    {
+      "id": "syn_06_borderline_below_threshold",
+      "beat_counts": {"N": 2000, "V": 90},
+      "expected_dominant": null,
+      "relevance_notes": "V burden 4.3% - below the 5% threshold; treated as predominantly normal."
+    },
+    {
+      "id": "syn_07_borderline_above_threshold",
+      "beat_counts": {"N": 2000, "V": 120},
+      "expected_dominant": "V",
+      "relevance_notes": "V burden 5.7% - just above threshold; ventricular pathway."
+    },
+    {
+      "id": "syn_08_mixed_s_over_v",
+      "beat_counts": {"N": 1500, "S": 300, "V": 150},
+      "expected_dominant": "S",
+      "relevance_notes": "Mixed ectopy, supraventricular predominant."
+    },
+    {
+      "id": "syn_09_mixed_v_over_s",
+      "beat_counts": {"N": 1500, "V": 300, "S": 150},
+      "expected_dominant": "V",
+      "relevance_notes": "Mixed ectopy, ventricular predominant."
+    },
+    {
+      "id": "syn_10_fusion_predominant",
+      "beat_counts": {"N": 2800, "F": 360, "V": 220},
+      "expected_dominant": "F",
+      "relevance_notes": "Fusion beats imply competing ventricular focus - ventricular guideline applies."
+    },
+    {
+      "id": "syn_11_all_normal",
+      "beat_counts": {"N": 2200},
+      "expected_dominant": null,
+      "relevance_notes": "Entirely normal - reassurance/monitoring only."
+    },
+    {
+      "id": "syn_12_ventricular_bigeminy",
+      "beat_counts": {"N": 1100, "V": 1050},
+      "expected_dominant": "V",
+      "relevance_notes": "Near 1:1 PVC pattern (bigeminy); very high burden - cardiomyopathy risk discussed in guideline."
+    }
+  ],
+  "record_cases": [
+    {"id": "rec_100", "record": "100", "relevance_notes": "Mostly normal, rare APCs."},
+    {"id": "rec_103", "record": "103", "relevance_notes": "Normal sinus rhythm."},
+    {"id": "rec_105", "record": "105", "relevance_notes": "Normal with noise and some PVCs."},
+    {"id": "rec_113", "record": "113", "relevance_notes": "Sinus arrhythmia, few aberrated APCs."},
+    {"id": "rec_117", "record": "117", "relevance_notes": "Normal, first-degree AV block."},
+    {"id": "rec_210", "record": "210", "relevance_notes": "Atrial fibrillation with multiform PVCs."},
+    {"id": "rec_200", "record": "200", "relevance_notes": "Frequent multiform PVCs, ventricular bigeminy."},
+    {"id": "rec_228", "record": "228", "relevance_notes": "Frequent PVCs, first-degree AV block."},
+    {"id": "rec_213", "record": "213", "relevance_notes": "Fusion beats and PVCs."},
+    {"id": "rec_214", "record": "214", "relevance_notes": "LBBB with PVCs."},
+    {"id": "rec_221", "record": "221", "relevance_notes": "Atrial fibrillation with frequent PVCs."},
+    {"id": "rec_231", "record": "231", "relevance_notes": "RBBB with 2:1 AV block; no ectopy."},
+    {"id": "rec_222", "record": "222", "relevance_notes": "Paroxysmal AFL/AF, nodal rhythm, APCs."},
+    {"id": "rec_232", "record": "232", "relevance_notes": "Sinus bradycardia with very frequent APCs."},
+    {"id": "rec_233", "record": "233", "relevance_notes": "Very frequent multiform PVCs."}
+  ]
+}

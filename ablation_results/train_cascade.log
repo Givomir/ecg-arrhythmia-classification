@@ -1,0 +1,63 @@
+Extracting features (DS1, 22 records)...
+Extracting features (DS2, 22 records)...
+  DS1: (51005, 247) | {'N': 45851, 'Q': 8, 'S': 944, 'V': 3788, 'F': 414}
+  DS2: (49696, 247) | {'N': 44244, 'S': 1837, 'V': 3220, 'Q': 7, 'F': 388}
+Classes: ['F', 'N', 'Q', 'S', 'V']
+
+Out-of-fold scores (5-fold GroupKFold by record over DS1)...
+  fold 1/5 done
+  fold 2/5 done
+  fold 3/5 done
+  fold 4/5 done
+  fold 5/5 done
+Stage-2 S threshold: 0.38 (DS1 out-of-fold S F1 = 0.334)
+
+Training the final cascade on all of DS1...
+
+===== Classification Report (cascade, DS2) =====
+              precision    recall  f1-score   support
+
+           F       0.00      0.01      0.01       388
+           N       0.96      0.95      0.96     44244
+           Q       0.00      0.00      0.00         7
+           S       0.41      0.25      0.31      1837
+           V       0.87      0.96      0.91      3220
+
+    accuracy                           0.92     49696
+   macro avg       0.45      0.43      0.44     49696
+weighted avg       0.93      0.92      0.92     49696
+
+===== Confusion Matrix =====
+Rows=true, columns=predicted; row/column order = ['F', 'N', 'Q', 'S', 'V']
+[[    5   236     0     1   146]
+ [ 1324 42047     3   624   246]
+ [    0     4     0     0     3]
+ [    0  1331     0   457    49]
+ [    0   106     0    31  3083]]
+
+===== S detection =====
+  DS2                S recall 0.249 | S precision 0.411 | S F1 0.310
+  DS2 without 232    S recall 0.640 | S precision 0.307 | S F1 0.415
+
+  record     S  caught   N->S
+     100    33      33      1
+     103     2       1      0
+     111     0       0      1
+     113     6       1      8
+     117     1       0      0
+     121     1       0      0
+     123     0       0      6
+     200    30      17      9
+     202    55      30    105
+     210    22      19    132
+     213    28       0      1
+     219     7       0    112
+     221     0       0     39
+     222   209     162    207
+     228     3       2      2
+     231     1       0      0
+     232  1382     166      0
+     233     7       0      0
+     234    50      26      1
+
+Saved: model.pkl, scaler.pkl, label_encoder.pkl, meta.pkl in artifacts_cascade/

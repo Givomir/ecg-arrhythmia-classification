@@ -1,0 +1,14 @@
+Loading from cache: ablation_results\features_v3_lead0.npz
+
+9 experiments (RF 150 trees, 5 folds, seeds 0,1,2, criterion f1)
+  full_cw                | thr 0.30±0.01 | S rec 0.28 prec 0.31 F1 0.29 | w/o 232: rec 0.68 prec 0.21 F1 0.32 | 148s
+  base_rrlong_cw         | thr 0.26±0.02 | S rec 0.82 prec 0.45 F1 0.58 | w/o 232: rec 0.77 prec 0.16 F1 0.26 | 142s
+  base_rrrec_cw          | thr 0.24±0.01 | S rec 0.80 prec 0.45 F1 0.57 | w/o 232: rec 0.76 prec 0.16 F1 0.26 | 135s
+  base_rrlong_irr_cw     | thr 0.28±0.01 | S rec 0.53 prec 0.40 F1 0.45 | w/o 232: rec 0.73 prec 0.18 F1 0.29 | 136s
+  base_rrrec_irr_cw      | thr 0.28±0.00 | S rec 0.42 prec 0.35 F1 0.38 | w/o 232: rec 0.73 prec 0.19 F1 0.30 | 136s
+  base_rrlong_irr_none   | thr 0.22±0.01 | S rec 0.44 prec 0.45 F1 0.45 | w/o 232: rec 0.66 prec 0.23 F1 0.34 | 574s
+  cascade_rf             | thr 0.38±0.01 | S rec 0.23 prec 0.39 F1 0.29 | w/o 232: rec 0.63 prec 0.31 F1 0.41 | 359s
+  cascade_hgb            | thr 0.34±0.20 | S rec 0.35 prec 0.24 F1 0.26 | w/o 232: rec 0.72 prec 0.15 F1 0.24 | 311s
+  cascade_rf_rhythm_only | thr 0.10±0.02 | S rec 0.58 prec 0.22 F1 0.32 | w/o 232: rec 0.81 prec 0.09 F1 0.16 | 259s
+
+Saved: ablation_results/results.json and results.md

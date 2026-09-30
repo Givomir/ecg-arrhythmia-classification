@@ -1,25 +1,26 @@
 """
-Единен модул за предсказание - работи с ВСИЧКИ модели (RF, MLP, CNN).
-Автоматично разпознава типа:
-  * model.pkl   -> scikit-learn модел (Random Forest / MLP)
-  * model.keras -> Keras CNN (хибриден вход: морфология + контекст)
+Unified prediction module - works with ALL models (cascade, RF, MLP, CNN).
+Detects the model type automatically:
+  * model.pkl   -> scikit-learn compatible model (cascade / Random Forest / MLP)
+  * model.keras -> Keras CNN (hybrid input: morphology + context)
 
-Поправено спрямо оригинала:
-  * етикетите идват от запазения LabelEncoder (не хардкоднат обърнат речник)
-  * scaler-ът е този от трениране (само transform, без повторен fit)
-  * един и същ интерфейс make_prediction() за трите модела
+Fixed compared to the original:
+  * the labels come from the saved LabelEncoder (not a hard-coded reversed dict)
+  * the scaler is the one from training (transform only, no re-fit)
+  * one and the same make_prediction() interface for all three models
 """
 import os
 import joblib
 import numpy as np
 
-ARTIFACT_DIR = os.environ.get('ARTIFACT_DIR', 'artifacts')
+# Default: the cascade model (best S detection and RAG routing, see README)
+ARTIFACT_DIR = os.environ.get('ARTIFACT_DIR', 'artifacts_cascade')
 
-# Зареждаме общите артефакти (има ги при всички модели)
+# Load the shared artifacts (present for every model)
 _scaler = joblib.load(os.path.join(ARTIFACT_DIR, 'scaler.pkl'))
 _le = joblib.load(os.path.join(ARTIFACT_DIR, 'label_encoder.pkl'))
 
-# Разпознаваме типа модел по наличния файл
+# Detect the model type from the file that is present
 _keras_path = os.path.join(ARTIFACT_DIR, 'model.keras')
 _pkl_path = os.path.join(ARTIFACT_DIR, 'model.pkl')
 
@@ -27,26 +28,26 @@ if os.path.exists(_keras_path):
     MODEL_TYPE = 'cnn'
     _meta = joblib.load(os.path.join(ARTIFACT_DIR, 'meta.pkl'))
     N_CONTEXT = _meta['n_context']
-    _model = None  # отложено зареждане (TF е тежък)
+    _model = None  # lazy loading (TF is heavy)
 elif os.path.exists(_pkl_path):
     MODEL_TYPE = 'sklearn'
     _model = joblib.load(_pkl_path)
 else:
     raise FileNotFoundError(
-        f"Няма намерен модел в {ARTIFACT_DIR} (търсих model.keras или model.pkl)")
+        f"No model found in {ARTIFACT_DIR} (looked for model.keras or model.pkl)")
 
-# Клинични описания на AAMI групите
+# Clinical descriptions of the AAMI groups
 AAMI_DESC = {
-    'N': 'Normal / bundle branch (нормален удар)',
-    'S': 'Supraventricular ectopic (надкамерна екстрасистола)',
-    'V': 'Ventricular ectopic (камерна екстрасистола)',
-    'F': 'Fusion beat (сливен удар)',
-    'Q': 'Unknown / paced (неопределим / пейсиран)',
+    'N': 'Normal / bundle branch (normal beat)',
+    'S': 'Supraventricular ectopic (supraventricular premature beat)',
+    'V': 'Ventricular ectopic (ventricular premature beat)',
+    'F': 'Fusion beat (fusion of normal and ventricular beat)',
+    'Q': 'Unknown / paced (unclassifiable / paced beat)',
 }
 
 
 def _get_keras_model():
-    """Отложено зареждане на Keras модела (за да не тегли TF при импорт)."""
+    """Lazy loading of the Keras model (so importing does not pull in TF)."""
     global _model
     if _model is None:
         import tensorflow as tf
@@ -65,7 +66,7 @@ def _predict_sklearn(X):
 
 
 def _predict_cnn(X):
-    # CNN очаква разделен вход: морфология (Conv клон) + контекст (dense клон)
+    # The CNN expects a split input: morphology (Conv branch) + context (dense branch)
     morph = X[:, :-N_CONTEXT][..., np.newaxis]
     ctx = X[:, -N_CONTEXT:]
     model = _get_keras_model()
@@ -78,12 +79,12 @@ def _predict_cnn(X):
 
 def make_prediction(beat_features):
     """
-    beat_features: пълният вектор признаци за ЕДИН удар (морфология + контекст),
-                   със същата дължина като при трениране.
-    Работи идентично за RF, MLP и CNN - извикващият код не се променя.
+    beat_features: the full feature vector for ONE beat (morphology + context),
+                   with the same length as in training.
+    Works identically for RF, MLP and CNN - the calling code does not change.
     """
     try:
-        # Скалиране със ЗАПАЗЕНИЯ scaler (само transform)
+        # Scaling with the SAVED scaler (transform only)
         X = np.nan_to_num(np.asarray(beat_features, dtype=float)).reshape(1, -1)
         X = _scaler.transform(X)
 

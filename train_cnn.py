@@ -1,23 +1,23 @@
 """
-1D CNN (Convolutional Neural Network) за ЕКГ класификация
+1D CNN (Convolutional Neural Network) for ECG classification
 ==========================================================
-Третият модел. За разлика от RF и MLP, тук конволюционната мрежа учи
-морфологията на удара САМА от суровия сигнал, вместо да разчита само на
-ръчно извлечени признаци.
+The third model. Unlike RF and MLP, the convolutional network learns the
+beat morphology BY ITSELF from the raw signal instead of relying only on
+hand-crafted features.
 
-Хибридна архитектура (две входни глави):
-  1. Морфология: суровият сегмент на удара -> Conv1D блокове (учат формата)
-  2. RR/P контекст: последните 9 инженерни признака -> директно в dense частта
-     (за да запазим тайминг информацията, която много помогна на клас S)
+Hybrid architecture (two input heads):
+  1. Morphology: the raw beat segment -> Conv1D blocks (learn the shape)
+  2. RR/P context: the last 9 engineered features -> straight into the dense part
+     (to keep the timing information, which helped class S a lot)
 
-Двата клона се сливат, после dense + softmax за 5-те AAMI класа.
+The two branches are merged, followed by dense + softmax for the 5 AAMI classes.
 
-Ползва СЪЩАТА логика за извличане като другите два модела (импортира от
-train_arrhythmia), така че сравнението е чисто.
+Uses the SAME extraction logic and the SAME split (DS1/DS2 + separate
+validation records) as the other two models, so the comparison is clean.
 
-Изисква: tensorflow
-Изпълнение:
-    python train_cnn.py --data_dir /път/до/mit-bih --out_dir artifacts_cnn
+Requires: tensorflow
+Usage:
+    python train_cnn.py --data_dir /path/to/mit-bih --out_dir artifacts_cnn
 """
 
 import os
@@ -30,19 +30,16 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-from train_arrhythmia import process_records
-
-# Броят инженерни признаци накрая на всеки вектор (prev_rr, next_rr, rr_ratio,
-# prev_rr_norm, next_rr_norm, + 4 P-вълна признака) = 9.
-N_CONTEXT = 9
+from train_arrhythmia import load_split
+from utility import N_CONTEXT  # 9 engineered features at the end of the vector
 
 
 def build_model(morph_len, n_context, n_classes):
-    """Хибриден 1D CNN: Conv клон за морфология + dense клон за RR/P контекст."""
+    """Hybrid 1D CNN: a Conv branch for morphology + a dense branch for RR/P context."""
     import tensorflow as tf
     from tensorflow.keras import layers, Model
 
-    # --- Клон 1: морфология през конволюции ---
+    # --- Branch 1: morphology through convolutions ---
     morph_in = layers.Input(shape=(morph_len, 1), name='morphology')
     x = layers.Conv1D(32, 7, padding='same', activation='relu')(morph_in)
     x = layers.BatchNormalization()(x)
@@ -56,11 +53,11 @@ def build_model(morph_len, n_context, n_classes):
     x = layers.BatchNormalization()(x)
     x = layers.GlobalAveragePooling1D()(x)
 
-    # --- Клон 2: RR/P контекст директно ---
+    # --- Branch 2: RR/P context directly ---
     ctx_in = layers.Input(shape=(n_context,), name='context')
     c = layers.Dense(16, activation='relu')(ctx_in)
 
-    # --- Сливане ---
+    # --- Merge ---
     merged = layers.concatenate([x, c])
     z = layers.Dense(64, activation='relu')(merged)
     z = layers.Dropout(0.3)(z)
@@ -74,7 +71,7 @@ def build_model(morph_len, n_context, n_classes):
 
 
 def split_features(X):
-    """Разделя всеки вектор на (морфология, контекст)."""
+    """Splits every vector into (morphology, context)."""
     morph = X[:, :-N_CONTEXT]
     ctx = X[:, -N_CONTEXT:]
     return morph, ctx
@@ -91,60 +88,47 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    record_numbers = ['100','101','103','105','106','108','109','111','112','113',
-                      '114','115','116','117','118','119','121','122','123','124',
-                      '200','201','202','203','205','207','208','209','210','212',
-                      '213','214','215','219','220','221','222','223','228','230',
-                      '231','232','233','234']
-    record_numbers = [r for r in record_numbers
-                      if os.path.exists(os.path.join(args.data_dir, r + '.dat'))]
-    if not record_numbers:
-        raise FileNotFoundError(f"Няма намерени записи в {args.data_dir}")
+    # DS1 (without VAL_RECORDS) -> train, VAL_RECORDS -> validation, DS2 -> test
+    X_train, y_train, X_val, y_val, X_test, y_test = load_split(
+        args.data_dir, args.lead, with_val=True)
 
-    n_train = int(0.8 * len(record_numbers))
-    train_records = record_numbers[:n_train]
-    test_records = record_numbers[n_train:]
-    print(f"Записи за трениране: {len(train_records)} | за тест: {len(test_records)}")
-
-    print("Извличане на характеристики (train)...")
-    X_train, y_train = process_records(train_records, args.data_dir, args.lead)
-    print("Извличане на характеристики (test)...")
-    X_test, y_test = process_records(test_records, args.data_dir, args.lead)
-    print(f"X_train: {X_train.shape} | X_test: {X_test.shape}")
-    print("Разпределение (train):", Counter(y_train))
-    print("Разпределение (test): ", Counter(y_test))
-
-    # -- Кодиране на етикетите --
+    # -- Label encoding --
     le = LabelEncoder()
-    y_train_enc = le.fit_transform(y_train)
+    le.fit(np.concatenate([y_train, y_val, y_test]))
+    y_train_enc = le.transform(y_train)
+    y_val_enc = le.transform(y_val)
     y_test_enc = le.transform(y_test)
-    print("Класове:", list(le.classes_))
+    labels = np.arange(len(le.classes_))
+    print("Classes:", list(le.classes_))
 
-    # -- Скалиране (fit само на train, после се запазва) --
+    # -- Scaling (fit on train only, then saved) --
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
+    X_val_s = scaler.transform(X_val)
     X_test_s = scaler.transform(X_test)
 
-    # -- Разделяне на морфология и контекст --
+    # -- Split into morphology and context --
     Xtr_morph, Xtr_ctx = split_features(X_train_s)
+    Xva_morph, Xva_ctx = split_features(X_val_s)
     Xte_morph, Xte_ctx = split_features(X_test_s)
     morph_len = Xtr_morph.shape[1]
 
-    # Reshape морфологията за Conv1D: (проби, дължина, 1 канал)
+    # Reshape the morphology for Conv1D: (samples, length, 1 channel)
     Xtr_morph = Xtr_morph[..., np.newaxis]
+    Xva_morph = Xva_morph[..., np.newaxis]
     Xte_morph = Xte_morph[..., np.newaxis]
 
-    # -- Балансиране чрез class weights (естествено за невронни мрежи) --
+    # -- Balancing via class weights (natural for neural networks) --
     classes = np.unique(y_train_enc)
     weights = compute_class_weight('balanced', classes=classes, y=y_train_enc)
-    # ОГРАНИЧАВАМЕ теглата: класове с шепа примери (Q=15) иначе получават
-    # тегло ~1000, което дърпа обучението в грешна посока и дестабилизира
-    # останалите класове. Таван от 50 е разумен компромис.
+    # We CAP the weights: classes with a handful of examples (Q=15) would otherwise get
+    # a weight of ~1000, which pulls training in the wrong direction and destabilizes
+    # the other classes. A cap of 50 is a reasonable compromise.
     weights = np.clip(weights, None, 50.0)
     class_weight = {int(c): float(w) for c, w in zip(classes, weights)}
-    print("Class weights (ограничени):", class_weight)
+    print("Class weights (capped):", class_weight)
 
-    # -- Модел --
+    # -- Model --
     import tensorflow as tf
     model = build_model(morph_len, N_CONTEXT, len(le.classes_))
     model.summary()
@@ -156,11 +140,12 @@ def main():
                                              monitor='val_loss', min_lr=1e-5),
     ]
 
-    print("Трениране на CNN...")
+    print("Training CNN...")
     model.fit(
         {'morphology': Xtr_morph, 'context': Xtr_ctx},
         y_train_enc,
-        validation_split=0.1,
+        # Validation by PATIENT (separate records), not the last 10% of beats
+        validation_data=({'morphology': Xva_morph, 'context': Xva_ctx}, y_val_enc),
         epochs=args.epochs,
         batch_size=args.batch,
         class_weight=class_weight,
@@ -168,25 +153,25 @@ def main():
         verbose=2,
     )
 
-    # -- Оценка --
+    # -- Evaluation --
     probs = model.predict({'morphology': Xte_morph, 'context': Xte_ctx})
     y_pred = np.argmax(probs, axis=1)
 
     print("\n===== Classification Report (CNN) =====")
-    print(classification_report(y_test_enc, y_pred,
+    print(classification_report(y_test_enc, y_pred, labels=labels,
                                 target_names=le.classes_, zero_division=0))
     print("===== Confusion Matrix =====")
-    print("Редове=истина, колони=предсказано; ред/колона =", list(le.classes_))
-    print(confusion_matrix(y_test_enc, y_pred))
+    print("Rows=true, columns=predicted; row/column order =", list(le.classes_))
+    print(confusion_matrix(y_test_enc, y_pred, labels=labels))
 
-    # -- Запазване --
+    # -- Saving --
     model.save(os.path.join(args.out_dir, 'model.keras'))
     joblib.dump(scaler, os.path.join(args.out_dir, 'scaler.pkl'))
     joblib.dump(le, os.path.join(args.out_dir, 'label_encoder.pkl'))
-    # Записваме и колко признака са контекст (нужно за deployment)
+    # Also save how many features are context (needed for deployment)
     joblib.dump({'n_context': N_CONTEXT, 'morph_len': morph_len},
                 os.path.join(args.out_dir, 'meta.pkl'))
-    print(f"\nЗапазени: model.keras, scaler.pkl, label_encoder.pkl, meta.pkl в {args.out_dir}/")
+    print(f"\nSaved: model.keras, scaler.pkl, label_encoder.pkl, meta.pkl in {args.out_dir}/")
 
 
 if __name__ == '__main__':

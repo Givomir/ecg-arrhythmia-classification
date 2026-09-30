@@ -1,21 +1,21 @@
 """
-RAG клинична препоръка на база ЕКГ класификация
+RAG clinical recommendation based on ECG classification
 ==================================================
-Свързва трите части:
-  1. Изход от ЕКГ модела (класификация на удари в запис)
-  2. Retrieval - намира релевантни пасажи от guidelines (векторно търсене)
-  3. Ollama (Llama 3.2) - генерира оценка и препоръка САМО на база пасажите
+Connects the three parts:
+  1. Output of the ECG model (classification of the beats in a record)
+  2. Retrieval - finds relevant passages from the guidelines (vector search)
+  3. Ollama (Llama 3.2) - generates an assessment and recommendation ONLY from the passages
 
-ВАЖНО - ОБРАЗОВАТЕЛЕН ПРОТОТИП:
-Тази система е учебен проект, НЕ медицинско изделие. Не замества лекар.
-Не се използва за реална диагностика или лечение.
+IMPORTANT - EDUCATIONAL PROTOTYPE:
+This system is a student project, NOT a medical device. It does not replace a physician.
+Not to be used for real diagnosis or treatment.
 
-Изисква:
-  * изграден индекс (build_rag_index.py)
-  * работеща Ollama с модел llama3.2 (ollama serve)
-  * обучен ЕКГ модел (artifacts_mlp/)
+Requires:
+  * a built index (build_rag_index.py)
+  * a running Ollama with the llama3.2 model (ollama serve)
+  * a trained ECG model (artifacts_cascade/ - cascade RF, best routing on DS2)
 
-Стартиране:
+Usage:
     python rag_recommend.py --data_dir "C:\\...\\mit-bih" --record 208
 """
 import os
@@ -23,50 +23,54 @@ import json
 import argparse
 import numpy as np
 import requests
+from functools import lru_cache
 
 DISCLAIMER = (
-    "⚠  ОБРАЗОВАТЕЛЕН ПРОТОТИП — не е медицинско изделие. Не замества "
-    "лекарска оценка. Не използвайте за реална диагностика или лечение."
+    "⚠  EDUCATIONAL PROTOTYPE — not a medical device. Does not replace "
+    "clinical judgment. Do not use for real diagnosis or treatment."
 )
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 
+CLASS_NAMES_EN = {'N': 'normal', 'S': 'supraventricular ectopic',
+                  'V': 'ventricular ectopic', 'F': 'fusion', 'Q': 'unknown/paced'}
+
+# Threshold for a "dominant abnormality": a non-N class counts as clinically
+# significant only if it makes up at least MIN_BURDEN of the beats. Otherwise a single
+# ectopic beat in an otherwise normal record (e.g. 0.1% V) would trigger the whole "ventricular" path.
+# 5% is a conservative cut-off (a PVC burden below ~1-5% is usually benign;
+# >10% is associated with a risk of cardiomyopathy).
+MIN_BURDEN = 0.05
+
+
 # ---------------------------------------------------------------------------
-# 1. Анализ на ЕКГ запис -> обобщение на находките
+# 1. Analysis of an ECG record -> summary of the findings
 # ---------------------------------------------------------------------------
-def analyze_record(data_dir, record, artifacts, lead=0):
-    """Класифицира всички удари и връща текстово обобщение на находките."""
-    import wfdb
+def find_dominant(counts, min_burden=MIN_BURDEN):
+    """The most frequent non-N class if it is at least min_burden of the beats; otherwise None."""
+    total = sum(counts.values())
+    abnormal = {c: n for c, n in counts.items() if c != 'N'}
+    if not total or not abnormal:
+        return None
+    dominant = max(abnormal, key=abnormal.get)
+    return dominant if abnormal[dominant] / total >= min_burden else None
+
+
+def summarize_counts(record, counts, fs=None):
+    """Text summary of the findings (in English - for Llama and the guidelines)."""
+    total = sum(counts.values())
+    hz = f", sampling {fs} Hz" if fs else ""
+    lines = [f"ECG record {record}: {total} beats analyzed{hz}."]
+    for cls, cnt in sorted(counts.items(), key=lambda kv: -kv[1]):
+        pct = 100.0 * cnt / total
+        lines.append(f"  - {CLASS_NAMES_EN.get(cls, cls)} ({cls}): {cnt} beats ({pct:.1f}%)")
+    return "\n".join(lines)
+
+
+def classify_beats(X, artifacts):
+    """Classifies a feature matrix with the model in artifacts (sklearn or keras)."""
     import joblib
-    from collections import Counter
-    from train_arrhythmia import AAMI_GROUPS, extract_beat_features
-
-    rec_path = os.path.join(data_dir, record)
-    rec = wfdb.rdrecord(rec_path)
-    ann = wfdb.rdann(rec_path, 'atr')
-    signal = rec.p_signal[:, lead]
-    fs = rec.fs
-
-    beats = [(s, sym) for s, sym in zip(ann.sample, ann.symbol)
-             if sym in AAMI_GROUPS]
-    peaks = [b[0] for b in beats]
-    rr_all = [(peaks[k] - peaks[k - 1]) / fs for k in range(1, len(peaks))]
-
-    X = []
-    for i, (r_peak, sym) in enumerate(beats):
-        prev_r = beats[i - 1][0] if i > 0 else None
-        next_r = beats[i + 1][0] if i < len(beats) - 1 else None
-        lo = max(0, i - 10)
-        window_rr = rr_all[lo:i] if i > 0 else []
-        lmr = float(np.mean(window_rr)) if window_rr else None
-        feats = extract_beat_features(signal, r_peak, prev_r, next_r, fs,
-                                      local_mean_rr=lmr)
-        if feats is not None:
-            X.append(feats)
-    X = np.array(X)
-
-    # Зареждаме модела (sklearn или keras)
     scaler = joblib.load(os.path.join(artifacts, 'scaler.pkl'))
     le = joblib.load(os.path.join(artifacts, 'label_encoder.pkl'))
     Xs = scaler.transform(X)
@@ -78,70 +82,106 @@ def analyze_record(data_dir, record, artifacts, lead=0):
         nc = meta['n_context']
         p = model.predict({'morphology': Xs[:, :-nc][..., np.newaxis],
                            'context': Xs[:, -nc:]}, verbose=0)
-        pred = le.inverse_transform(np.argmax(p, axis=1))
-    else:
-        model = joblib.load(os.path.join(artifacts, 'model.pkl'))
-        pred = le.inverse_transform(model.predict(Xs))
+        return le.inverse_transform(np.argmax(p, axis=1))
+    model = joblib.load(os.path.join(artifacts, 'model.pkl'))
+    return le.inverse_transform(model.predict(Xs))
+
+
+def analyze_record(data_dir, record, artifacts, lead=0, min_burden=MIN_BURDEN):
+    """
+    Classifies all beats and returns a text summary of the findings.
+    Also returns the true (annotated) classes - for evaluating the pipeline.
+    """
+    from collections import Counter
+    from train_arrhythmia import load_beats
+    from utility import record_features, uses_rhythm_features
+
+    signals, fs, beats = load_beats(os.path.join(data_dir, record))
+    X, kept = record_features(signals[:, lead], [b[0] for b in beats], fs,
+                              rhythm=uses_rhythm_features(artifacts))
+    X = np.nan_to_num(X)
+    pred = classify_beats(X, artifacts)
+    true = [beats[i][1] for i in kept]
 
     counts = Counter(pred)
-    total = len(pred)
-    names = {'N': 'normal', 'S': 'supraventricular ectopic',
-             'V': 'ventricular ectopic', 'F': 'fusion', 'Q': 'unknown/paced'}
-
-    # Текстово обобщение (на английски - за Llama и за guidelines)
-    lines = [f"ECG record {record}: {total} beats analyzed, sampling {fs} Hz."]
-    for cls, cnt in counts.most_common():
-        pct = 100.0 * cnt / total
-        lines.append(f"  - {names.get(cls, cls)} ({cls}): {cnt} beats ({pct:.1f}%)")
-    summary = "\n".join(lines)
-
-    # Определяме доминиращата аномалия (без N)
-    abnormal = {c: n for c, n in counts.items() if c != 'N'}
-    dominant = max(abnormal, key=abnormal.get) if abnormal else None
-    return summary, counts, total, dominant, names
+    summary = summarize_counts(record, counts, fs)
+    dominant = find_dominant(counts, min_burden)
+    return {'summary': summary, 'counts': counts, 'total': len(pred),
+            'dominant': dominant, 'true_counts': Counter(true), 'fs': fs}
 
 
 # ---------------------------------------------------------------------------
-# 2. Retrieval - намира релевантни пасажи от guidelines
+# 2. Retrieval - finds relevant passages from the guidelines
 # ---------------------------------------------------------------------------
-def retrieve(query, index_dir, top_k=5):
-    """Векторно търсене - връща top_k най-релевантни части."""
+@lru_cache(maxsize=4)
+def _load_index(index_dir):
+    """Loads the index and the embedding model ONCE (cached)."""
     from sentence_transformers import SentenceTransformer
-
     with open(os.path.join(index_dir, 'config.json')) as f:
         cfg = json.load(f)
     with open(os.path.join(index_dir, 'chunks.json'), encoding='utf-8') as f:
         chunks = json.load(f)
     embeddings = np.load(os.path.join(index_dir, 'embeddings.npy'))
+    return SentenceTransformer(cfg['model']), chunks, embeddings
 
-    model = SentenceTransformer(cfg['model'])
+
+def retrieve(query, index_dir, top_k=5):
+    """Vector search - returns the top_k most relevant chunks."""
+    model, chunks, embeddings = _load_index(os.path.abspath(index_dir))
     q_emb = model.encode([query], normalize_embeddings=True)[0]
 
-    # Косинусова близост (embeddings са нормализирани -> скаларно произведение)
+    # Cosine similarity (the embeddings are normalized -> dot product)
     scores = embeddings @ q_emb
     top_idx = np.argsort(-scores)[:top_k]
     return [(chunks[i], float(scores[i])) for i in top_idx]
 
 
 # ---------------------------------------------------------------------------
-# 3. Ollama - генерира препоръка на база пасажите
+# 2b. Building a targeted query per class
 # ---------------------------------------------------------------------------
-def ask_ollama(prompt, model='llama3.2', temperature=0.2):
-    """Праща заявка към локалната Ollama."""
+def build_query_for_class(dominant):
+    """
+    Builds a query that matches the LANGUAGE of the target guideline.
+    Important: for supraventricular (S) we avoid the word 'ventricular' (a substring of
+    'supraventricular'), which pulls the search towards the wrong guideline.
+    Instead we use the terms of the atrial fibrillation guideline.
+    """
+    if dominant == 'V':
+        return ("ventricular arrhythmia premature ventricular contractions "
+                "ICD sudden cardiac death risk management catheter ablation")
+    if dominant == 'S':
+        return ("atrial fibrillation supraventricular anticoagulation stroke "
+                "prevention rate rhythm control CHA2DS2-VASc")
+    if dominant in ('F', 'Q'):
+        return ("ventricular arrhythmia evaluation structural heart disease "
+                "monitoring")
+    # normal / no dominant abnormality
+    return "normal sinus rhythm evaluation monitoring low risk"
+
+
+# ---------------------------------------------------------------------------
+# 3. Ollama - generates a recommendation from the passages
+# ---------------------------------------------------------------------------
+def ask_ollama(prompt, model='llama3.2', temperature=0.2, seed=None):
+    """Sends a request to the local Ollama. seed -> reproducible answer."""
+    options = {'temperature': temperature}
+    if seed is not None:
+        options['seed'] = seed
     resp = requests.post(OLLAMA_URL, json={
         'model': model,
         'prompt': prompt,
         'stream': False,
-        'options': {'temperature': temperature},
-    }, timeout=180)
+        'options': options,
+    }, timeout=600)
     resp.raise_for_status()
     return resp.json()['response']
 
 
-def build_prompt(ecg_summary, dominant_name, passages):
-    """Съставя промпта за Llama - строго на база подадените пасажи."""
+def build_prompt(ecg_summary, dominant_name, passages, max_chars=700):
+    """Builds the prompt for Llama - strictly based on the given passages.
+    The passages are truncated so they do not overload the small local model."""
     context = "\n\n".join(
-        f"[Source {i+1}: {p['source']}]\n{p['text']}"
+        f"[Source {i+1}: {p['source'][:40]}]\n{p['text'][:max_chars]}"
         for i, (p, _) in enumerate(passages)
     )
     return f"""You are a clinical decision-support assistant for EDUCATIONAL purposes.
@@ -174,45 +214,46 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data_dir', required=True)
     ap.add_argument('--record', default='208')
-    ap.add_argument('--artifacts', default='artifacts_mlp')
+    ap.add_argument('--artifacts', default='artifacts_cascade')
     ap.add_argument('--index', default='rag_index')
     ap.add_argument('--model', default='llama3.2')
-    ap.add_argument('--top_k', type=int, default=5)
+    ap.add_argument('--top_k', type=int, default=4)
+    ap.add_argument('--min_burden', type=float, default=MIN_BURDEN,
+                    help='minimum share of a non-N class for it to be "dominant"')
     args = ap.parse_args()
 
     print("=" * 70)
     print(DISCLAIMER)
     print("=" * 70)
 
-    # 1. Анализ на ЕКГ
-    print(f"\n[1/3] Анализ на ЕКГ запис {args.record}...")
-    summary, counts, total, dominant, names = analyze_record(
-        args.data_dir, args.record, args.artifacts)
+    # 1. ECG analysis
+    print(f"\n[1/3] Analyzing ECG record {args.record}...")
+    res = analyze_record(args.data_dir, args.record, args.artifacts,
+                         min_burden=args.min_burden)
+    summary, dominant = res['summary'], res['dominant']
     print(summary)
 
     # 2. Retrieval
-    dominant_name = names.get(dominant) if dominant else None
-    query = (f"management and evaluation of {dominant_name} arrhythmia "
-             f"clinical recommendations") if dominant else \
-            "normal sinus rhythm evaluation"
-    print(f"\n[2/3] Търсене в guidelines: '{query}'...")
+    dominant_name = CLASS_NAMES_EN.get(dominant) if dominant else None
+    query = build_query_for_class(dominant)
+    print(f"\n[2/3] Searching the guidelines: '{query}'...")
     passages = retrieve(query, args.index, args.top_k)
     for i, (p, score) in enumerate(passages):
         print(f"  [{i+1}] ({score:.3f}) {p['source'][:45]}... {p['text'][:80]}...")
 
-    # 3. Llama препоръка
-    print(f"\n[3/3] Генериране на препоръка с {args.model}...")
+    # 3. Llama recommendation
+    print(f"\n[3/3] Generating the recommendation with {args.model}...")
     prompt = build_prompt(summary, dominant_name, passages)
     try:
         answer = ask_ollama(prompt, model=args.model)
     except requests.exceptions.ConnectionError:
-        print("\n[!] Не мога да се свържа с Ollama на localhost:11434.")
-        print("    Увери се, че Ollama работи (ollama serve) и моделът е свален:")
+        print("\n[!] Cannot connect to Ollama on localhost:11434.")
+        print("    Make sure Ollama is running (ollama serve) and the model is pulled:")
         print(f"    ollama pull {args.model}")
         return
 
     print("\n" + "=" * 70)
-    print("КЛИНИЧНА ПРЕПОРЪКА (образователна)")
+    print("CLINICAL RECOMMENDATION (educational)")
     print("=" * 70)
     print(answer)
     print("\n" + "=" * 70)
