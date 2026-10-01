@@ -1,11 +1,17 @@
 # ECG Arrhythmia Classification with Clinical Recommendations
 
 [![CI](https://github.com/Givomir/ecg-arrhythmia-classification/actions/workflows/ci.yml/badge.svg)](https://github.com/Givomir/ecg-arrhythmia-classification/actions/workflows/ci.yml)
+[![Project site](https://img.shields.io/badge/project%20site-GitHub%20Pages-blue)](https://givomir.github.io/ecg-arrhythmia-classification/)
 
 Multi-class ECG heartbeat classification on the **MIT-BIH Arrhythmia Database**,
-with model comparison, an explainable visualizer, a REST API, and a
-**RAG system** that connects classifier output to ACC/AHA clinical guidelines
-via a local LLM (Llama 3.2 through Ollama).
+connected to a **RAG system** that grounds an educational clinical
+recommendation in ACC/AHA guidelines through a local LLM (Llama 3.2 via Ollama).
+
+The default model is a **two-stage cascade** that was chosen by an ablation
+study of supraventricular (S) beats. The project runs as a single-file
+**desktop app** (`ECGAnalyzer.exe`, no installation), a Streamlit **web app**
+or a **REST API**. It has unit and integration tests in a GitHub Actions
+**CI pipeline**.
 
 > ⚠ **Educational prototype — not a medical device.** Does not replace clinical
 > judgment. Not for real diagnosis or treatment.
@@ -13,30 +19,62 @@ via a local LLM (Llama 3.2 through Ollama).
 ## Features
 
 - **Multi-class classification** by AAMI EC57 groups (N, S, V, F, Q) — not binary
-- **Three models compared**: Random Forest, MLP, 1D CNN, on the standard
-  inter-patient **DS1/DS2 split** (de Chazal et al., 2004) — no patient appears
-  in both train and test, and results are comparable with the literature
-- **Patient-wise validation**: early stopping for MLP/CNN monitors 4 held-out
-  DS1 records, separated *before* oversampling (no duplicated beats leak into
-  validation)
-- **Feature engineering**: beat morphology + RR intervals + rhythm-normalized RR
-  + P-wave features (239 features per beat), plus optional long-window RR and
-  rhythm-irregularity features (247 per beat) for the cascade model
+- **Four models compared**: Cascade RF (default), Random Forest, MLP and 1D CNN,
+  on the standard inter-patient **DS1/DS2 split** (de Chazal et al., 2004) —
+  no patient appears in both train and test, and results are comparable with
+  the literature
 - **Cascade model for S beats**: a multi-class Random Forest followed by a
-  dedicated S-vs-N detector, chosen by an ablation study (see below)
-- **Explainable visualization**: full ECG plot with beats colored by class,
-  abnormalities starred, plus which feature groups drive the decision
+  dedicated S-vs-N detector, chosen by an ablation study (see
+  [Improving S detection](#improving-s-detection-tests-and-model-choice))
+- **Feature engineering**: beat morphology + RR intervals + rhythm-normalized RR
+  + P-wave features (239 per beat), plus long-window RR and rhythm-irregularity
+  features (247 per beat) for the cascade
+- **Patient-wise validation**: early stopping for MLP/CNN monitors 4 held-out
+  DS1 records, separated *before* oversampling; the cascade's threshold comes
+  from a GroupKFold by record
+- **RAG clinical recommendations**: the beat classification and the guideline
+  passages retrieved for the dominant abnormality are sent together to a local
+  Llama model, which answers only from those passages and cites them
+- **Guideline library**: new guideline documents (.pdf/.txt) can be added to
+  or removed from the RAG index at any time, also from the desktop app
+- **Desktop app**: one `ECGAnalyzer.exe` that runs without installation, with
+  the RAG engine built in (ONNX embeddings, no PyTorch)
+- **Web app** (Streamlit): the whole ECG record with a scroll bar, the beat
+  distribution and the recommendation
 - **REST API** (FastAPI) serving any of the models
+- **Explainable visualization**: beats colored by class, abnormalities starred,
+  and which feature groups drive the decision
 - **RAG evaluation** against a gold set: routing, retrieval (vs. a baseline
-  query) and faithfulness checks, including real DS2 records end-to-end
-- **RAG clinical recommendations**: retrieves relevant guideline passages and
-  generates an educational assessment with a local Llama model
-- **Web app** (Streamlit) tying everything together
-- **Desktop app**: a single `ECGAnalyzer.exe` that runs without installation,
-  with the full RAG engine built in: guideline documents can be added or
-  removed from the app at any time
-- **RAG microservice** (optional, PyTorch): the same guideline index as a
-  REST service, for sharing one index between several clients
+  query) and faithfulness, including real DS2 records end to end
+- **Optional RAG microservice** (FastAPI + PyTorch): the same guideline index
+  shared over HTTP
+- **Tests and CI**: 95 unit and integration tests on synthetic and real data,
+  run by GitHub Actions on every push
+
+## How it works
+
+```
+ECG record (MIT-BIH .dat/.hea/.atr)
+  │
+  ├─ 1. Features per beat (utility.py): morphology, RR, normalized RR,
+  │     P wave, long-window RR, rhythm irregularity
+  ├─ 2. Classification (default: Cascade RF) -> N / S / V / F / Q per beat
+  ├─ 3. Dominant abnormality: the most frequent non-N class, if it is at
+  │     least 5% of the beats (MIN_BURDEN); otherwise "mostly normal"
+  ├─ 4. Retrieval: a query written for that class searches the guideline
+  │     index (all-MiniLM-L6-v2 embeddings) -> the 4 best passages
+  ├─ 5. Prompt = beat classification summary + guideline passages
+  └─ 6. Local LLM (Ollama, llama3.2) -> educational note citing [Source N]
+```
+
+The guideline index can be searched in three ways. All three give the same
+passages:
+
+| Where | Embeddings | Can add documents |
+|---|---|---|
+| Desktop app (built-in engine) | ONNX, bundled in the .exe | yes, from the app |
+| Web app / `rag_recommend.py` (local index) | sentence-transformers | via `build_rag_index.py` |
+| Optional RAG microservice (`rag_service/`) | sentence-transformers | yes, via its REST API or the desktop app |
 
 ## Results (DS2 test set, inter-patient split)
 
@@ -53,10 +91,10 @@ Trained on DS1 (22 records; MLP/CNN use 18 for training + 4 for validation), tes
 predicted dominant class lead to the same guideline as the cardiologist
 annotations? S precision for the CNN was not re-measured.
 
-**The Cascade RF is the default model** for the API, the visualizer, the web
-app and the RAG pipeline. It is the plain Random Forest's pipeline plus a
-dedicated S-vs-N stage (`cascade.py`, `train_cascade.py`). How the model was
-found, and why it was chosen, is described below.
+**The Cascade RF is the default model** in the desktop app, the web app, the
+REST API, the visualizer and the RAG pipeline. It is the plain Random Forest's
+pipeline plus a dedicated S-vs-N stage (`cascade.py`, `train_cascade.py`). How
+the model was found, and why it was chosen, is described below.
 
 On the standard DS2 split no model handles S or F well. These are the known
 hard classes in inter-patient evaluation. (Earlier numbers from a sequential
@@ -220,47 +258,72 @@ DS1 out-of-fold scores.
 ## Project structure
 
 ```
-train_arrhythmia.py   # Random Forest training
-train_mlp.py          # MLP training
-train_cnn.py          # 1D CNN training
-train_cascade.py      # cascade (RF + S-vs-N detector) training
-cascade.py            # the cascade classifier (needed to load its model.pkl)
-ablation_s.py         # S-beat ablation study
-utility.py            # feature extraction (single source for training + deployment)
-predict.py            # unified prediction (auto-detects model type)
-app.py                # FastAPI server
-test_api.py           # API test client
-visualize_ecg.py      # ECG visualization with explainability
-build_rag_index.py    # builds the guideline vector index
-rag_recommend.py      # RAG recommendation engine
-evaluate_rag.py       # RAG evaluation against gold_set.json
-gold_set.json         # gold cases: synthetic beat counts + real DS2 records
-app_web.py            # Streamlit web app
-desktop_app.py        # desktop app (pywebview window + the same Python backend)
-desktop/              # desktop UI (HTML/JS), icon and the .exe build script
-rag_store.py          # guideline index store (shared by the desktop app and the service)
-rag_embedder.py       # ONNX sentence embeddings (no PyTorch) + export script
-rag_service/          # optional RAG microservice (FastAPI + PyTorch)
+# Models and training
+utility.py              # feature extraction (single source for training + deployment)
+train_arrhythmia.py     # Random Forest training (+ AAMI mapping, DS1/DS2 split)
+train_mlp.py            # MLP training
+train_cnn.py            # 1D CNN training
+train_cascade.py        # cascade (RF + S-vs-N detector) training
+cascade.py              # the cascade classifier (needed to load its model.pkl)
+ablation_s.py           # S-beat ablation study
+ablation_results/       # ablation tables (results.md, results_round2.md) and logs
+
+# RAG
+build_rag_index.py      # builds the guideline index (chunking, atomic index files)
+rag_store.py            # guideline index store (shared by the desktop app and the service)
+rag_embedder.py         # ONNX sentence embeddings (no PyTorch) + export script
+rag_recommend.py        # dominant class, retrieval, prompt, Ollama
+evaluate_rag.py         # RAG evaluation against gold_set.json
+gold_set.json           # gold cases: synthetic beat counts + real DS2 records
+rag_service/            # optional RAG microservice (FastAPI + PyTorch)
+
+# Applications
+desktop_app.py          # desktop app (pywebview window + the same Python backend)
+desktop/                # desktop UI (HTML/JS/CSS), icon, .exe build script and requirements
+app_web.py              # Streamlit web app
+app.py                  # FastAPI classification server
+predict.py              # unified prediction (auto-detects the model type)
+test_api.py             # API test client
+visualize_ecg.py        # ECG visualization with explainability
+
+# Tests, CI and docs
+tests/                  # unit and integration tests (pytest)
+.github/workflows/      # GitHub Actions CI pipeline
+docs/                   # project site (GitHub Pages)
+requirements.txt        # main environment
+requirements-test.txt   # test environment (also used by CI)
+pytest.ini, .coveragerc # test and coverage configuration
 ```
 
 ## Setup
 
+There are three environments, for different purposes:
+
+| Environment | Requirements | Used for |
+|---|---|---|
+| Main | `requirements.txt` | training, the web app, the REST API, the RAG tools |
+| Desktop build | `desktop/requirements-desktop.txt` | building `ECGAnalyzer.exe` (no PyTorch, no TensorFlow) |
+| Tests | `requirements-test.txt` | running the tests locally and in CI |
+
 ```bash
-# Create an isolated environment (recommended)
+# Main environment (recommended: an isolated conda env)
 conda create -n ecg python=3.11 -y
 conda activate ecg
 pip install -r requirements.txt
 ```
 
 Download the MIT-BIH database (e.g. via `wfdb.dl_database('mitdb', ...)`) or
-from PhysioNet, and note the folder path.
+from PhysioNet, and note the folder path. The guideline PDFs (ACC/AHA) go into
+`guidelines/`.
 
 ## Usage
 
-**1. Train a model** (the cascade is the default model used by the apps)
+**1. Train the models** (the cascade is the default model used by the apps)
 ```bash
-python train_mlp.py --data_dir /path/to/mit-bih --out_dir artifacts_mlp
-python train_cascade.py --data_dir /path/to/mit-bih --out_dir artifacts_cascade
+python train_cascade.py    --data_dir /path/to/mit-bih --out_dir artifacts_cascade
+python train_arrhythmia.py --data_dir /path/to/mit-bih --out_dir artifacts
+python train_mlp.py        --data_dir /path/to/mit-bih --out_dir artifacts_mlp
+python train_cnn.py        --data_dir /path/to/mit-bih --out_dir artifacts_cnn
 ```
 The apps read `meta.pkl` and extract the rhythm features automatically for the
 cascade model.
@@ -283,10 +346,13 @@ ARTIFACT_DIR=artifacts_mlp uvicorn app:app --reload   # any other model
 python test_api.py --data_dir /path/to/mit-bih --record 200 --beat 10
 ```
 
-**4. Build the RAG index** (needs ACC/AHA guideline PDFs in `guidelines/`)
+**4. Build the RAG index** (needs the ACC/AHA guideline PDFs in `guidelines/`)
 ```bash
 python build_rag_index.py --guidelines_dir guidelines --out rag_index
 ```
+This creates `rag_index/` (passages, embeddings, config), identifies every
+document by its full file name, and precomputes the embeddings of the fixed
+per-class queries (`query_embeddings.json`). Every save is atomic.
 
 **4b. RAG microservice** (optional)
 
@@ -340,27 +406,25 @@ uvicorn rag_service.app:app --port 8001     # http://localhost:8001 (API docs: /
   and chunks with less than 85% ASCII text are dropped as PDF garbage. So
   documents in other languages, such as Bulgarian, are not indexed usefully.
 
-In every recommendation the LLM receives **both** the beat classification
-summary (beat counts per class and the dominant abnormality) **and** the
-guideline passages retrieved for that abnormality (`build_prompt` in
-`rag_recommend.py`). It is told to answer only from those passages and to
-cite them as [Source N].
-
-**5. Run the web app** (needs Ollama running with llama3.2)
+**5. Run the web app** (Ollama with llama3.2 is needed only for the recommendation text)
 ```bash
-ollama serve          # in another terminal
-streamlit run app_web.py
+ollama serve                                       # in another terminal, if not running
+streamlit run app_web.py                           # http://localhost:8501
+RAG_SERVICE_URL=http://localhost:8001 streamlit run app_web.py   # optional: use the RAG service
 ```
+The web app shows the whole record as an interactive plot with a scroll bar
+(drag the window to move through the record, drag its edges to zoom), the
+beat distribution, the retrieved guideline passages and the recommendation.
 
 **6. Desktop app (single .exe, no installation)**
 
 `ECGAnalyzer.exe` is one file: double-click it to start. It contains the
-cascade, Random Forest and MLP models and a copy of the guideline index. The
-MIT-BIH records stay in a separate folder, chosen with **Change…**. The choice
-is remembered in `%APPDATA%\ECGAnalyzer\settings.json`, and a folder with
-records next to the .exe is found automatically. The app has the same features
-as the web app: the whole-record plot with a scroll bar, the beat
-distribution, the guideline passages, and the Llama recommendation.
+cascade, Random Forest and MLP models, the guideline index and the RAG engine.
+The MIT-BIH records stay in a separate folder, chosen with **Change…**. The
+choice is remembered in `%APPDATA%\ECGAnalyzer\settings.json`, and a folder
+with records next to the .exe is found automatically. The app has the same
+features as the web app: the whole-record plot with a scroll bar, the beat
+distribution, the guideline passages and the Llama recommendation.
 
 **The RAG engine is built in.** In the **Guideline library** section you can
 add guideline documents (**Add document…**, .pdf/.txt) or remove them. The app
@@ -382,9 +446,10 @@ else needs to be installed or started.
 - **Optional microservice.** With **RAG engine: RAG service** the
   app uses the microservice from step 4b instead. If the service is offline,
   the app searches with the built-in engine meanwhile.
+- **What is sent to the LLM.** This section shows the exact prompt: the beat
+  classification summary and the retrieved guideline passages.
 
-The section **What is sent to the LLM** shows the exact prompt: the beat
-classification summary and the retrieved guideline passages.
+Other details:
 
 - **Size and start-up:** about 208 MB, about half of it the ONNX embedding
   model. The window opens in roughly 10-15 s, because a single-file .exe
@@ -438,11 +503,11 @@ git. So the tests build their own inputs (`tests/conftest.py`):
 - a deterministic fake embedding model in place of sentence-transformers or
   ONNX.
 
-| Suite | What it covers |
-|---|---|
-| `tests/unit/` | feature extraction and rhythm features, the cascade classifier, dominant class / queries / prompt / retrieval, chunking and atomic index files, the guideline index store (name conflicts, legacy names, external rewrites, half-written files), the data split, desktop helpers |
-| `tests/integration/` (marker `integration`) | record analysis end to end, the classification REST API, the RAG service REST API, the desktop backend (analysis, built-in RAG library, the LLM prompt with classification + passages, service fallback) |
-| `tests/integration/test_mitbih_data.py` (marker `data`) | real MIT-BIH records 100 and 232, downloaded from PhysioNet (about 6 MB), or taken from `MITBIH_DIR` |
+| Suite | Tests | What it covers |
+|---|:--:|---|
+| `tests/unit/` | 71 | feature extraction and rhythm features, the cascade classifier, dominant class / queries / prompt / retrieval, chunking and atomic index files, the guideline index store (name conflicts, legacy names, external rewrites, half-written files), the data split, desktop helpers |
+| `tests/integration/` (marker `integration`) | 22 | record analysis end to end, the classification REST API, the RAG service REST API, the desktop backend (analysis, built-in RAG library, the LLM prompt with classification + passages, service fallback) |
+| `tests/integration/test_mitbih_data.py` (marker `data`) | 2 | real MIT-BIH records 100 and 232, downloaded from PhysioNet (about 6 MB), or taken from `MITBIH_DIR` |
 
 ```bash
 py -3.11 -m venv .venv-test
@@ -452,8 +517,11 @@ py -3.11 -m venv .venv-test
 .venv-test\Scripts\python -m pytest --cov             # with coverage
 ```
 
+Coverage of the core modules: `cascade.py` 100%, `rag_store.py` 99%,
+`utility.py` 99%, the classification REST API 95%, the RAG service 91%.
+
 The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push to
-`main` and on pull requests. It has two jobs:
+`main`, on pull requests and on demand. It has two jobs:
 
 1. **Unit + integration tests.** Checks that every script compiles, runs the
    tests with coverage, and uploads the JUnit and coverage reports.
@@ -463,16 +531,30 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push to
 The Windows .exe is not built in CI, because it needs the trained models,
 which are not in git.
 
+## Project site (GitHub Pages)
+
+A short project page is published from the `docs/` folder at
+**https://givomir.github.io/ecg-arrhythmia-classification/**. It is enabled in
+the repository under **Settings → Pages** (source: *Deploy from a branch*,
+branch `main`, folder `/docs`).
+
+On the free GitHub plan, Pages works only for public repositories. Making the
+repository private disables Pages, and making it public again does **not**
+re-enable it: turn it back on under **Settings → Pages**.
+
 ## Notes
 
-- Data, trained models, and guideline PDFs are **not** included in the repo
-  (see `.gitignore`) — they are generated or downloaded locally.
-- The MIT-BIH database and ACC/AHA guidelines are subject to their own licenses.
+- Data, trained models (`artifacts*/`), guideline PDFs, the RAG index, the ONNX
+  model and the built .exe are **not** in the repo (see `.gitignore`). They are
+  generated or downloaded locally.
+- The MIT-BIH database and the ACC/AHA guidelines are subject to their own
+  licenses.
 - A non-N class is treated as the *dominant abnormality* only if it makes up
   at least 5% of beats (`MIN_BURDEN` in `rag_recommend.py`); otherwise the
   record is handled as predominantly normal.
 - Class S (supraventricular) is the hardest — a known challenge in this dataset
-  due to few examples and near-normal morphology. See *Improving S detection: tests and model choice*.
+  due to few examples and near-normal morphology. See
+  [Improving S detection](#improving-s-detection-tests-and-model-choice).
 
 ## License
 
