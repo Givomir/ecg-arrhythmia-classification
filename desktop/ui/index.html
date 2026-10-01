@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECG Analyzer</title>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/plotly.min.js"></script>
+</head>
+<body>
+<aside class="sidebar">
+  <h2>Settings</h2>
+
+  <label>MIT-BIH data folder</label>
+  <div class="folder">
+    <span id="data-dir" class="path">not selected</span>
+    <button id="btn-folder" class="secondary">Change…</button>
+  </div>
+
+  <label for="record">Record</label>
+  <select id="record"></select>
+
+  <label for="model">Model</label>
+  <select id="model"></select>
+
+  <label for="window">Visible window: <span id="window-val">10</span> s</label>
+  <input id="window" type="range" min="5" max="60" step="5" value="10">
+  <p class="hint">Initial width of the view. Drag the edges of the window in the
+    scroll bar to zoom in or out.</p>
+
+  <button id="btn-analyze" class="primary">Analyze record</button>
+  <p id="status" class="status"></p>
+</aside>
+
+<main>
+  <header>
+    <h1>ECG Analyzer with Clinical Recommendations</h1>
+    <p class="disclaimer">⚠ Educational prototype — not a medical device.
+      Does not replace clinical judgment.</p>
+  </header>
+
+  <section id="empty" class="empty">
+    <p>Choose the folder with the MIT-BIH records, pick a record and press
+      <strong>Analyze record</strong>.</p>
+  </section>
+
+  <section id="results" hidden>
+    <h2 id="plot-title"></h2>
+    <div id="plot"></div>
+    <p class="caption">Scroll bar: drag the window to move through the whole record,
+      drag its edges to zoom | Color = predicted class | * = abnormality |
+      red square = differs from annotation | hover a beat for details</p>
+
+    <h2>Beat distribution</h2>
+    <div id="counts" class="counts"></div>
+
+    <h2>Clinical Recommendation (RAG + Llama)</h2>
+    <p class="caption">Retrieves relevant ACC/AHA guideline passages and generates an
+      educational assessment with a local Llama model (Ollama, optional).</p>
+    <div class="rag-controls">
+      <label for="llama">Ollama model</label>
+      <select id="llama"></select>
+      <button id="btn-recommend" class="primary">Generate recommendation</button>
+    </div>
+    <p id="rag-status" class="status"></p>
+    <p id="rag-source" class="caption"></p>
+    <details id="passages" hidden>
+      <summary>Retrieved guideline passages</summary>
+      <div id="passages-list"></div>
+    </details>
+    <details id="prompt-box" hidden>
+      <summary>What is sent to the LLM (beat classification + guideline passages)</summary>
+      <pre id="prompt"></pre>
+    </details>
+    <div id="answer" class="answer" hidden></div>
+  </section>
+
+  <section id="library">
+    <h2>Guideline library (RAG)</h2>
+    <p class="caption">The guideline documents the recommendations are based on. Added
+      documents are indexed (split into passages and embedded) and used in every new
+      recommendation.</p>
+    <div class="service-url">
+      <label for="rag-mode">RAG engine</label>
+      <select id="rag-mode">
+        <option value="local">Built-in (this computer)</option>
+        <option value="service">RAG service</option>
+      </select>
+    </div>
+    <div id="service-row" class="service-url" hidden>
+      <label for="rag-url">Service URL</label>
+      <input id="rag-url" type="text" spellcheck="false">
+      <button id="btn-rag-url" class="secondary">Connect</button>
+    </div>
+    <div class="service">
+      <span id="rag-dot" class="dot"></span>
+      <span id="rag-service-status">Checking…</span>
+    </div>
+    <table id="docs" class="docs" hidden>
+      <thead><tr><th>Document</th><th>Chunks</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="btn-add-doc" class="secondary" disabled>Add document…</button>
+    <p id="docs-status" class="status"></p>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

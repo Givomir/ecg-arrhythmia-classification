@@ -1,0 +1,15 @@
+# Test dependencies (CI and local). No PyTorch, no TensorFlow: the tests use
+# synthetic data, tiny models trained on the fly and a fake embedding model.
+numpy==1.26.4
+scikit-learn==1.9.0
+joblib
+scipy
+wfdb
+requests
+fastapi
+uvicorn
+httpx
+python-multipart
+pypdf
+pytest
+pytest-cov

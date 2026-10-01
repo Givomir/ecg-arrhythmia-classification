@@ -25,6 +25,8 @@ import numpy as np
 import requests
 from functools import lru_cache
 
+from build_rag_index import index_signature, load_index_files
+
 DISCLAIMER = (
     "⚠  EDUCATIONAL PROTOTYPE — not a medical device. Does not replace "
     "clinical judgment. Do not use for real diagnosis or treatment."
@@ -113,22 +115,83 @@ def analyze_record(data_dir, record, artifacts, lead=0, min_burden=MIN_BURDEN):
 # ---------------------------------------------------------------------------
 # 2. Retrieval - finds relevant passages from the guidelines
 # ---------------------------------------------------------------------------
+# Embeddings of the fixed per-class queries (build_query_for_class), computed
+# once when the index is built. With them, retrieval for the app's queries
+# needs no embedding model at run time (no PyTorch in the desktop app), and
+# the result is identical to encoding the query live.
+QUERY_CACHE_FILE = 'query_embeddings.json'
+
+
+def _file_stamp(path):
+    try:
+        st = os.stat(path)
+        return st.st_mtime_ns, st.st_size
+    except FileNotFoundError:
+        return None
+
+
 @lru_cache(maxsize=4)
+def _load_index_cached(index_dir, stamp):
+    """Reads the index files; cached per version of the files (stamp)."""
+    model_name, chunks, embeddings = load_index_files(index_dir)
+    query_cache = {}
+    cache_path = os.path.join(index_dir, QUERY_CACHE_FILE)
+    if os.path.exists(cache_path):
+        with open(cache_path, encoding='utf-8') as f:
+            query_cache = json.load(f)
+    return {'model': model_name}, chunks, embeddings, query_cache
+
+
 def _load_index(index_dir):
-    """Loads the index and the embedding model ONCE (cached)."""
+    """The index: config, chunks, embeddings, query cache. Reloaded automatically
+    when its files change on disk (e.g. the RAG service added a document or
+    build_rag_index.py rebuilt it) - no restart needed."""
+    stamp = (index_signature(index_dir), _file_stamp(os.path.join(index_dir, QUERY_CACHE_FILE)))
+    return _load_index_cached(index_dir, stamp)
+
+
+@lru_cache(maxsize=2)
+def _load_encoder(model_name):
+    """The embedding model - loaded only for queries that are not cached."""
     from sentence_transformers import SentenceTransformer
-    with open(os.path.join(index_dir, 'config.json')) as f:
-        cfg = json.load(f)
-    with open(os.path.join(index_dir, 'chunks.json'), encoding='utf-8') as f:
-        chunks = json.load(f)
-    embeddings = np.load(os.path.join(index_dir, 'embeddings.npy'))
-    return SentenceTransformer(cfg['model']), chunks, embeddings
+    return SentenceTransformer(model_name)
 
 
-def retrieve(query, index_dir, top_k=5):
-    """Vector search - returns the top_k most relevant chunks."""
-    model, chunks, embeddings = _load_index(os.path.abspath(index_dir))
-    q_emb = model.encode([query], normalize_embeddings=True)[0]
+def embed_query(query, index_dir):
+    """Normalized query embedding: from the cache if possible, else encoded live."""
+    cfg, _, _, query_cache = _load_index(os.path.abspath(index_dir))
+    if query in query_cache:
+        return np.asarray(query_cache[query], dtype=np.float32)
+    return _load_encoder(cfg['model']).encode([query], normalize_embeddings=True)[0]
+
+
+def save_class_query_embeddings(index_dir):
+    """Computes and saves the embeddings of all per-class queries."""
+    cfg, _, _, _ = _load_index(os.path.abspath(index_dir))
+    model = _load_encoder(cfg['model'])
+    queries = sorted({build_query_for_class(c) for c in [None, 'N', 'S', 'V', 'F', 'Q']})
+    vectors = model.encode(queries, normalize_embeddings=True)
+    with open(os.path.join(index_dir, QUERY_CACHE_FILE), 'w', encoding='utf-8') as f:
+        json.dump({q: v.tolist() for q, v in zip(queries, vectors)}, f)
+    return len(queries)
+
+
+# RAG microservice (rag_service/, optional). When a service URL is set,
+# retrieval goes through it: live embeddings, any query, uploaded documents.
+# Otherwise the local index in index_dir is used.
+RAG_SERVICE_URL = os.environ.get('RAG_SERVICE_URL', '')
+
+
+def retrieve(query, index_dir, top_k=5, service_url=None):
+    """Vector search - returns the top_k most relevant chunks as (chunk, score)."""
+    url = (RAG_SERVICE_URL if service_url is None else service_url).rstrip('/')
+    if url:
+        resp = requests.post(url + '/search', json={'query': query, 'top_k': top_k}, timeout=60)
+        resp.raise_for_status()
+        return [({'text': h['text'], 'source': h['source']}, h['score']) for h in resp.json()]
+
+    _, chunks, embeddings, _ = _load_index(os.path.abspath(index_dir))
+    q_emb = embed_query(query, index_dir)
 
     # Cosine similarity (the embeddings are normalized -> dot product)
     scores = embeddings @ q_emb

@@ -1,0 +1,14 @@
+# Build environment for the desktop .exe (python desktop/build_exe.py).
+# numpy and scikit-learn must match the versions the models were saved with.
+numpy==1.26.4
+scikit-learn==1.9.0
+joblib
+wfdb
+pywebview
+requests
+plotly
+pyinstaller
+# built-in RAG engine: ONNX embeddings (no PyTorch) and PDF text extraction
+onnxruntime
+tokenizers
+pypdf

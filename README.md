@@ -1,5 +1,7 @@
 # ECG Arrhythmia Classification with Clinical Recommendations
 
+[![CI](https://github.com/Givomir/ecg-arrhythmia-classification/actions/workflows/ci.yml/badge.svg)](https://github.com/Givomir/ecg-arrhythmia-classification/actions/workflows/ci.yml)
+
 Multi-class ECG heartbeat classification on the **MIT-BIH Arrhythmia Database**,
 with model comparison, an explainable visualizer, a REST API, and a
 **RAG system** that connects classifier output to ACC/AHA clinical guidelines
@@ -30,6 +32,11 @@ via a local LLM (Llama 3.2 through Ollama).
 - **RAG clinical recommendations**: retrieves relevant guideline passages and
   generates an educational assessment with a local Llama model
 - **Web app** (Streamlit) tying everything together
+- **Desktop app**: a single `ECGAnalyzer.exe` that runs without installation,
+  with the full RAG engine built in: guideline documents can be added or
+  removed from the app at any time
+- **RAG microservice** (optional, PyTorch): the same guideline index as a
+  REST service, for sharing one index between several clients
 
 ## Results (DS2 test set, inter-patient split)
 
@@ -229,6 +236,11 @@ rag_recommend.py      # RAG recommendation engine
 evaluate_rag.py       # RAG evaluation against gold_set.json
 gold_set.json         # gold cases: synthetic beat counts + real DS2 records
 app_web.py            # Streamlit web app
+desktop_app.py        # desktop app (pywebview window + the same Python backend)
+desktop/              # desktop UI (HTML/JS), icon and the .exe build script
+rag_store.py          # guideline index store (shared by the desktop app and the service)
+rag_embedder.py       # ONNX sentence embeddings (no PyTorch) + export script
+rag_service/          # optional RAG microservice (FastAPI + PyTorch)
 ```
 
 ## Setup
@@ -276,13 +288,134 @@ python test_api.py --data_dir /path/to/mit-bih --record 200 --beat 10
 python build_rag_index.py --guidelines_dir guidelines --out rag_index
 ```
 
+**4b. RAG microservice** (optional)
+
+The desktop app does not need it: it has the same RAG engine built in (step
+6). The service is useful when several clients should share one guideline
+index, for example the web app, `rag_recommend.py` or other computers. It
+holds the guideline index and embeds documents and queries live with
+sentence-transformers on PyTorch (CPU), so new guideline documents can be
+added at any time without rebuilding anything.
+
+```bash
+pip install -r rag_service/requirements.txt
+uvicorn rag_service.app:app --port 8001     # http://localhost:8001 (API docs: /docs)
+```
+`RAG_INDEX_DIR` and `RAG_DOCS_DIR` choose the index and documents folders
+(default: `rag_index/` and `guidelines/` in the project).
+
+| Endpoint | What it does |
+|---|---|
+| `GET /health` | status, embedding model, number of documents and chunks |
+| `GET /documents` | indexed documents with their chunk counts |
+| `POST /documents` | upload a .pdf/.txt: extract, chunk, embed and add it to the index; returns 409 if a document with that name is already indexed, unless `?replace=true` (the desktop app asks before replacing) |
+| `DELETE /documents/{source}` | remove a document from the index |
+| `POST /search` | `{"query": "...", "top_k": 4}` returns the best passages with scores |
+| `POST /embed` | `{"texts": [...]}` returns normalized embeddings |
+
+- **Shared index.** By default the service uses `rag_index/` and `guidelines/`,
+  so the index is shared with `build_rag_index.py`.
+- **Safe with other writers.** Every save is atomic (temp file, then rename),
+  both in the service and in `build_rag_index.py`. Before each request the
+  service checks whether the index files were rewritten by another process
+  and reloads them. A rebuild done while the service runs is therefore picked
+  up rather than overwritten, and a half-written index is never served. Local
+  readers (`rag_recommend.py`, the web app) also reload a changed index
+  without a restart. Two processes *writing at the same moment* are not
+  coordinated, so do not rebuild the index while uploading a document.
+- **Document names.** A document is identified by its full file name.
+  Indexes built before this change stored only the first 60 characters; such
+  an entry counts as the same document as a file whose name starts with it.
+  Rebuilding the index with `build_rag_index.py` switches it to full names.
+- **Who uses it.** The web app and `rag_recommend.py` use it when
+  `RAG_SERVICE_URL` is set (for example `RAG_SERVICE_URL=http://localhost:8001`);
+  otherwise they use the local index. The desktop app uses it only when you
+  choose **RAG engine: RAG service** in its Guideline library.
+- **Shared code.** The index logic is in `rag_store.py`, which the desktop
+  app uses as well. Only the embedding back end differs: PyTorch in the
+  service, ONNX in the desktop app.
+- **Same results.** Searching through the service gives exactly the same
+  passages and scores as the local index.
+- **English only.** The embedding model (all-MiniLM-L6-v2) is English-only,
+  and chunks with less than 85% ASCII text are dropped as PDF garbage. So
+  documents in other languages, such as Bulgarian, are not indexed usefully.
+
+In every recommendation the LLM receives **both** the beat classification
+summary (beat counts per class and the dominant abnormality) **and** the
+guideline passages retrieved for that abnormality (`build_prompt` in
+`rag_recommend.py`). It is told to answer only from those passages and to
+cite them as [Source N].
+
 **5. Run the web app** (needs Ollama running with llama3.2)
 ```bash
 ollama serve          # in another terminal
 streamlit run app_web.py
 ```
 
-**6. Evaluate the RAG system**
+**6. Desktop app (single .exe, no installation)**
+
+`ECGAnalyzer.exe` is one file: double-click it to start. It contains the
+cascade, Random Forest and MLP models and a copy of the guideline index. The
+MIT-BIH records stay in a separate folder, chosen with **Change…**. The choice
+is remembered in `%APPDATA%\ECGAnalyzer\settings.json`, and a folder with
+records next to the .exe is found automatically. The app has the same features
+as the web app: the whole-record plot with a scroll bar, the beat
+distribution, the guideline passages, and the Llama recommendation.
+
+**The RAG engine is built in.** In the **Guideline library** section you can
+add guideline documents (**Add document…**, .pdf/.txt) or remove them. The app
+extracts the text, splits it into passages, embeds them, and uses them in
+every later recommendation; a large guideline PDF takes about 40 s. Nothing
+else needs to be installed or started.
+
+- **Where the index lives.** The app's own index is in
+  `%APPDATA%\ECGAnalyzer\rag_index`. On the first run it is created from the
+  bundled guidelines, and copies of added documents are kept in
+  `%APPDATA%\ECGAnalyzer\guidelines`.
+- **Embeddings without PyTorch.** The embedding model (all-MiniLM-L6-v2) is
+  bundled as ONNX (`rag_embedder.py`) and runs with onnxruntime. Its vectors
+  are identical to sentence-transformers (cosine similarity 1.000000 on 300
+  index chunks; the same top-10 search results).
+- **Same index logic as the service.** It uses `rag_store.py`: documents are
+  identified by their full file name, the app asks before replacing a
+  document with the same name, and saves are atomic.
+- **Optional microservice.** With **RAG engine: RAG service** the
+  app uses the microservice from step 4b instead. If the service is offline,
+  the app searches with the built-in engine meanwhile.
+
+The section **What is sent to the LLM** shows the exact prompt: the beat
+classification summary and the retrieved guideline passages.
+
+- **Size and start-up:** about 208 MB, about half of it the ONNX embedding
+  model. The window opens in roughly 10-15 s, because a single-file .exe
+  unpacks itself to a temporary folder at every start.
+- **Ollama is optional and not bundled.** Without it everything works except
+  the generated recommendation text; the retrieved guideline passages are
+  still shown. When Ollama is running, its installed models are listed in
+  the app.
+- **The CNN is not included,** because it would need TensorFlow.
+- **The .exe is not code-signed.** Windows SmartScreen may warn on the first
+  start: choose *More info → Run anyway*.
+- **Requires WebView2,** which is built into Windows 11 and up-to-date
+  Windows 10.
+
+Build it in a clean environment. The numpy and scikit-learn versions must
+match the ones the models were saved with. The ONNX model is exported once,
+in an environment that has PyTorch and sentence-transformers:
+```bash
+python rag_embedder.py --export desktop/onnx_model   # once, needs PyTorch
+py -3.11 -m venv .venv
+.venv\Scripts\python -m pip install -r desktop\requirements-desktop.txt
+.venv\Scripts\python desktop\build_exe.py          # -> dist\ECGAnalyzer.exe
+```
+To check a built .exe without opening the window (it writes a JSON report):
+`ECGAnalyzer.exe --selftest <data_dir> <record> <report.json>`. It classifies
+the record with every model, retrieves passages, and adds, finds and removes
+a test document. Set `ECG_ANALYZER_HOME` to a test folder so that the
+self-test does not touch your own index.
+You can also run the desktop app from source with `python desktop_app.py`.
+
+**7. Evaluate the RAG system**
 ```bash
 # routing + retrieval on synthetic cases (fast, no LLM)
 python evaluate_rag.py
@@ -292,6 +425,43 @@ python evaluate_rag.py --data_dir /path/to/mit-bih --artifacts artifacts_cascade
 python evaluate_rag.py --data_dir /path/to/mit-bih --mode full --runs 3
 ```
 Detailed per-case output is written to `rag_eval_results.json`.
+
+## Tests and CI
+
+The data, the trained models, the guideline PDFs and the ONNX model are not in
+git. So the tests build their own inputs (`tests/conftest.py`):
+
+- a synthetic ECG record in the real MIT-BIH format, written with wfdb, with
+  normal, premature supraventricular and wide ventricular beats;
+- small models trained on that record, using the same code paths as the
+  training scripts;
+- a deterministic fake embedding model in place of sentence-transformers or
+  ONNX.
+
+| Suite | What it covers |
+|---|---|
+| `tests/unit/` | feature extraction and rhythm features, the cascade classifier, dominant class / queries / prompt / retrieval, chunking and atomic index files, the guideline index store (name conflicts, legacy names, external rewrites, half-written files), the data split, desktop helpers |
+| `tests/integration/` (marker `integration`) | record analysis end to end, the classification REST API, the RAG service REST API, the desktop backend (analysis, built-in RAG library, the LLM prompt with classification + passages, service fallback) |
+| `tests/integration/test_mitbih_data.py` (marker `data`) | real MIT-BIH records 100 and 232, downloaded from PhysioNet (about 6 MB), or taken from `MITBIH_DIR` |
+
+```bash
+py -3.11 -m venv .venv-test
+.venv-test\Scripts\python -m pip install -r requirements-test.txt
+.venv-test\Scripts\python -m pytest -m "not data"     # ~15 s, no network
+.venv-test\Scripts\python -m pytest -m data           # real records
+.venv-test\Scripts\python -m pytest --cov             # with coverage
+```
+
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push to
+`main` and on pull requests. It has two jobs:
+
+1. **Unit + integration tests.** Checks that every script compiles, runs the
+   tests with coverage, and uploads the JUnit and coverage reports.
+2. **Real MIT-BIH records.** Runs the `data` tests. The downloaded records
+   are cached between runs.
+
+The Windows .exe is not built in CI, because it needs the trained models,
+which are not in git.
 
 ## Notes
 

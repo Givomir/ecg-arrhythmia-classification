@@ -22,6 +22,70 @@ import argparse
 import json
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# Index files - shared by this script, the RAG microservice and rag_recommend
+# ---------------------------------------------------------------------------
+INDEX_FILES = ('embeddings.npy', 'chunks.json', 'config.json')
+
+
+def source_name(path):
+    """The source name of a document in the index: its full file name.
+    (Older indexes used only the first 60 characters, which could make two
+    documents with the same beginning collide.)"""
+    return os.path.basename(path)
+
+
+def index_signature(index_dir):
+    """(mtime, size) of every index file. It changes whenever any process
+    rewrites the index, so readers can notice and reload."""
+    sig = []
+    for name in INDEX_FILES:
+        try:
+            st = os.stat(os.path.join(index_dir, name))
+            sig.append((st.st_mtime_ns, st.st_size))
+        except FileNotFoundError:
+            sig.append(None)
+    return tuple(sig)
+
+
+def load_index_files(index_dir):
+    """Returns (model_name, chunks, embeddings). Raises ValueError if the files
+    do not match each other (e.g. caught in the middle of a rewrite)."""
+    with open(os.path.join(index_dir, 'config.json'), encoding='utf-8') as f:
+        cfg = json.load(f)
+    with open(os.path.join(index_dir, 'chunks.json'), encoding='utf-8') as f:
+        chunks = json.load(f)
+    embeddings = np.load(os.path.join(index_dir, 'embeddings.npy'))
+    if len(chunks) != len(embeddings) or cfg.get('n_chunks', len(chunks)) != len(chunks):
+        raise ValueError(f"inconsistent index in {index_dir}: {len(chunks)} chunks, "
+                         f"{len(embeddings)} embeddings, config says {cfg.get('n_chunks')}")
+    return cfg['model'], chunks, embeddings
+
+
+def save_index(index_dir, chunks, embeddings, model_name):
+    """Atomic save: every file is written to a temp file and then renamed, so a
+    reader never sees a half-written file. config.json goes last."""
+    os.makedirs(index_dir, exist_ok=True)
+
+    def replace(name, write):
+        tmp = os.path.join(index_dir, name + '.tmp')
+        write(tmp)
+        os.replace(tmp, os.path.join(index_dir, name))
+
+    def write_json(obj):
+        def write(path):
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(obj, f, ensure_ascii=False)
+        return write
+
+    def write_npy(path):
+        with open(path, 'wb') as f:
+            np.save(f, np.asarray(embeddings, dtype=np.float32))
+
+    replace('embeddings.npy', write_npy)
+    replace('chunks.json', write_json(chunks))
+    replace('config.json', write_json({'model': model_name, 'n_chunks': len(chunks)}))
+
 
 def read_text_file(path):
     """
@@ -137,13 +201,11 @@ def main():
     # --- Reading and chunking ---
     all_chunks = []
     for path in files:
-        name = os.path.basename(path)
-        # A short human-readable name for the source
-        short = name[:60]
+        source = source_name(path)
         text = clean_text(read_text_file(path))
-        chunks = chunk_text(text, short, args.chunk_size, args.overlap)
+        chunks = chunk_text(text, source, args.chunk_size, args.overlap)
         all_chunks.extend(chunks)
-        print(f"  {short}: {len(text.split())} words -> {len(chunks)} chunks")
+        print(f"  {source[:60]}: {len(text.split())} words -> {len(chunks)} chunks")
 
     print(f"\nTotal chunks: {len(all_chunks)}")
 
@@ -157,16 +219,17 @@ def main():
     embeddings = model.encode(texts, batch_size=64, show_progress_bar=True,
                               convert_to_numpy=True, normalize_embeddings=True)
 
-    # --- Saving the index ---
-    np.save(os.path.join(args.out, 'embeddings.npy'), embeddings.astype('float32'))
-    with open(os.path.join(args.out, 'chunks.json'), 'w', encoding='utf-8') as f:
-        json.dump(all_chunks, f, ensure_ascii=False)
-    with open(os.path.join(args.out, 'config.json'), 'w', encoding='utf-8') as f:
-        json.dump({'model': args.model, 'n_chunks': len(all_chunks)}, f)
+    # --- Saving the index (atomic: a running RAG service reloads it safely) ---
+    save_index(args.out, all_chunks, embeddings, args.model)
+
+    # --- Embeddings of the fixed per-class queries (no model needed at run time) ---
+    from rag_recommend import save_class_query_embeddings
+    n_queries = save_class_query_embeddings(args.out)
 
     print(f"\nIndex saved to {args.out}/")
     print(f"  embeddings.npy: {embeddings.shape}")
     print(f"  chunks.json: {len(all_chunks)} chunks")
+    print(f"  query_embeddings.json: {n_queries} per-class queries")
 
 
 if __name__ == '__main__':

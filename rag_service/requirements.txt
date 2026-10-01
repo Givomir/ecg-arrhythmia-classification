@@ -1,0 +1,10 @@
+# Optional RAG microservice (uvicorn rag_service.app:app --port 8001).
+# sentence-transformers installs PyTorch; for a smaller CPU-only install use
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+fastapi
+uvicorn[standard]
+python-multipart
+sentence-transformers
+numpy<2
+pymupdf
+pypdf

@@ -1,0 +1,17 @@
+[run]
+source = .
+omit =
+    tests/*
+    .venv*/*
+    build/*
+    dist/*
+    ablation_s.py
+    train_arrhythmia.py
+    train_mlp.py
+    train_cnn.py
+    visualize_ecg.py
+    app_web.py
+    test_api.py
+
+[report]
+skip_empty = true

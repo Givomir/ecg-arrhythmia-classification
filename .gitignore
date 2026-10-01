@@ -45,3 +45,16 @@ Thumbs.db
 !docs/img/*.png
 # Ablation study: raw per-run results and feature cache (the .md tables are committed)
 ablation_results/*.json
+
+# Desktop app build output (python desktop/build_exe.py)
+build/
+dist/
+desktop/ui/vendor/
+desktop/onnx_model/
+
+# Tests
+.venv*/
+tests/.data/
+.pytest_cache/
+.coverage
+coverage.xml
